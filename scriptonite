@@ -1,7 +1,7 @@
 --============================================================
--- olltaterfx | UNIVERSAL BENCH v4 — TABBED + TELE-COLLECT
--- kill aura(player/npc) + fly(joystick gốc) + noclip
--- auto-collect(teleport tức thì) | StarterPlayerScripts
+-- olltaterfx | UNIVERSAL BENCH v5.0.1 — ESP + PRIORITY NAMES
+-- kill aura + fly + noclip + auto-collect + pull + ESP
+-- StarterPlayerScripts (LocalScript)
 --============================================================
 
 local Players = game:GetService("Players")
@@ -11,48 +11,93 @@ local LocalPlayer = Players.LocalPlayer
 
 --============ STATE ============
 local state = {
-	killAuraPlayer = false,
-	killAuraNPC = false,
-	fly = false,
-	noclip = false,
-	autoCollect = false,
-	auraRangePlayer = 20,
-	auraRangeNPC = 20,
-	flySpeed = 60,
-	collectRange = 200,
+	killAuraPlayer = false, killAuraNPC = false,
+	fly = false, noclip = false,
+	autoCollect = false, touchCollect = false,
+	auraRangePlayer = 20, auraRangeNPC = 20,
+	flySpeed = 60, collectRange = 200,
 	keywords = { "chest", "fragment", "orb", "heart", "coin", "gem", "crystal", "egg" },
+	esp = {
+		player = false, npc = false, chest = false,
+		item = false, custom = false,
+		customKeywords = {},
+	},
 }
 
 local function getChar() return LocalPlayer.Character end
+local function getRoot()
+	local c = getChar()
+	return c and c:FindFirstChild("HumanoidRootPart")
+end
 local function isAlive(c)
 	return c and c:FindFirstChild("Humanoid") and c.Humanoid.Health > 0
 end
+local function matchesKeyword(name, list)
+	local lower = string.lower(name)
+	list = list or state.keywords
+	for i = 1, #list do
+		if string.find(lower, string.lower(list[i]), 1, true) then return true end
+	end
+	return false
+end
+local function getPart(inst)
+	if inst:IsA("BasePart") then return inst end
+	if inst:IsA("Model") then
+		return inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return inst:FindFirstChildWhichIsA("BasePart", true)
+end
+
+--============ SHARED MODEL CACHE ============
+local cache = { models = {}, nextRefresh = 0 }
+local function refreshCache()
+	local now = os.clock()
+	if now < cache.nextRefresh then return end
+	cache.nextRefresh = now + 0.5
+	cache.models = {}
+	local char = getChar()
+	for _, obj in pairs(workspace:GetChildren()) do
+		if obj:IsA("Model") and obj ~= char then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			local hrp = obj:FindFirstChild("HumanoidRootPart")
+			if hum and hrp then
+				cache.models[#cache.models + 1] = { model = obj, hum = hum, hrp = hrp }
+			end
+		end
+	end
+end
 
 --============ KILL AURA ============
-RunService.Heartbeat:Connect(function()
+local killed = setmetatable({}, { __mode = "k" })
+local kaAccum = 0
+RunService.Heartbeat:Connect(function(dt)
 	if not (state.killAuraPlayer or state.killAuraNPC) then return end
+	kaAccum += dt
+	if kaAccum < 0.12 then return end
+	kaAccum = 0
+	refreshCache()
 	local char = getChar()
 	if not isAlive(char) then return end
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
-	for _, obj in pairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and obj ~= char then
-			local hum = obj:FindFirstChildOfClass("Humanoid")
-			local hrp = obj:FindFirstChild("HumanoidRootPart")
-			if hum and hrp and hum.Health > 0 then
-				local dist = (hrp.Position - root.Position).Magnitude
-				local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
-				if isPlayer and state.killAuraPlayer and dist <= state.auraRangePlayer then
-					hum.Health = 0
-				elseif (not isPlayer) and state.killAuraNPC and dist <= state.auraRangeNPC then
-					hum.Health = 0
+	local rootPos = root.Position
+	for i = 1, #cache.models do
+		local t = cache.models[i]
+		if t.hum.Health > 0 and not killed[t.hum] then
+			local d = (t.hrp.Position - rootPos).Magnitude
+			local isPlayer = Players:GetPlayerFromCharacter(t.model) ~= nil
+			if isPlayer then
+				if state.killAuraPlayer and d <= state.auraRangePlayer then
+					t.hum.Health = 0; killed[t.hum] = true
 				end
+			elseif state.killAuraNPC and d <= state.auraRangeNPC then
+				t.hum.Health = 0; killed[t.hum] = true
 			end
 		end
 	end
 end)
 
---============ FLY (joystick gốc + xoay camera) ============
+--============ FLY ============
 local flyConn, bv, bg, savedWalk = 16
 local function startFly()
 	local char = getChar()
@@ -60,45 +105,29 @@ local function startFly()
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if not hrp or not hum then return end
-
 	savedWalk = hum.WalkSpeed
 	hum.WalkSpeed = 0
-
 	bv = Instance.new("BodyVelocity")
-	bv.MaxForce = Vector3.new(1e5,1e5,1e5)
-	bv.Velocity = Vector3.zero
-	bv.Parent = hrp
-
+	bv.MaxForce = Vector3.new(1e5,1e5,1e5); bv.Velocity = Vector3.zero; bv.Parent = hrp
 	bg = Instance.new("BodyGyro")
-	bg.MaxTorque = Vector3.new(1e5,1e5,1e5)
-	bg.P = 9e4
-	bg.CFrame = hrp.CFrame
-	bg.Parent = hrp
-
+	bg.MaxTorque = Vector3.new(1e5,1e5,1e5); bg.P = 9e4; bg.CFrame = hrp.CFrame; bg.Parent = hrp
 	flyConn = RunService.Heartbeat:Connect(function()
 		if not isAlive(char) then return end
 		local cam = workspace.CurrentCamera
 		local md = hum.MoveDirection
 		if md.Magnitude > 0.01 then
-			local lookFlat = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
-			local rightFlat = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
-			if lookFlat.Magnitude > 0 then lookFlat = lookFlat.Unit end
-			if rightFlat.Magnitude > 0 then rightFlat = rightFlat.Unit end
-			local fwd = md:Dot(lookFlat)
-			local rgt = md:Dot(rightFlat)
-			local dir = cam.CFrame.LookVector * fwd + cam.CFrame.RightVector * rgt
-			if dir.Magnitude > 0.001 then
-				bv.Velocity = dir.Unit * state.flySpeed
-			else
-				bv.Velocity = Vector3.zero
-			end
+			local lf = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+			local rf = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
+			if lf.Magnitude > 0 then lf = lf.Unit end
+			if rf.Magnitude > 0 then rf = rf.Unit end
+			local dir = cam.CFrame.LookVector * md:Dot(lf) + cam.CFrame.RightVector * md:Dot(rf)
+			bv.Velocity = dir.Magnitude > 0.001 and (dir.Unit * state.flySpeed) or Vector3.zero
 		else
 			bv.Velocity = Vector3.zero
 		end
 		bg.CFrame = cam.CFrame
 	end)
 end
-
 local function stopFly()
 	if flyConn then flyConn:Disconnect() end
 	if bv then bv:Destroy() end
@@ -122,50 +151,23 @@ RunService.Stepped:Connect(function()
 	end
 end)
 
---============ AUTO COLLECT (teleport + grab) ============
-local function matchesKeyword(name)
-	local lower = string.lower(name)
-	for _, kw in ipairs(state.keywords) do
-		if string.find(lower, string.lower(kw), 1, true) then return true end
-	end
-	return false
-end
-
-local function getPart(inst)
-	if inst:IsA("BasePart") then return inst end
-	if inst:IsA("Model") then
-		return inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
-	end
-	return inst:FindFirstChildWhichIsA("BasePart", true)
-end
-
-local collectAccum = 0
-RunService.Heartbeat:Connect(function(dt)
-	if not state.autoCollect then return end
-	collectAccum += dt
-	if collectAccum < 0.12 then return end
-	collectAccum = 0
-
-	local char = getChar()
-	if not isAlive(char) then return end
-	local root = char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-
-	-- tìm target gần nhất trong range
-	local best, bestDist = nil, math.huge
-	local bestKind = nil
-
+--============ ITEM CACHE ============
+local itemCache = { items = {}, nextRefresh = 0 }
+local function refreshItems()
+	local now = os.clock()
+	if now < itemCache.nextRefresh then return end
+	itemCache.nextRefresh = now + 0.5
+	itemCache.items = {}
 	for _, inst in pairs(workspace:GetDescendants()) do
-		if inst:IsA("ProximityPrompt") and inst.Enabled then
+		if inst:IsA("ProximityPrompt") then
 			local parent = inst.Parent
-			local name = ((parent and parent.Name) or "") .. " " .. (inst.ObjectText or "")
-			if matchesKeyword(name) then
-				local part = parent and getPart(parent)
+			if parent and matchesKeyword(((parent.Name or "") .. " " .. (inst.ObjectText or ""))) then
+				local part = getPart(parent)
 				if part then
-					local d = (part.Position - root.Position).Magnitude
-					if d <= state.collectRange and d < bestDist then
-						best, bestDist, bestKind = {inst = inst, part = part}, d, "prompt"
-					end
+					itemCache.items[#itemCache.items + 1] = {
+						kind = "prompt", inst = inst, part = part,
+						name = ((parent.Name or "") .. " " .. (inst.ObjectText or "")),
+					}
 				end
 			end
 		elseif inst:IsA("ClickDetector") then
@@ -173,39 +175,287 @@ RunService.Heartbeat:Connect(function(dt)
 			if parent and matchesKeyword(parent.Name) then
 				local part = getPart(parent)
 				if part then
-					local d = (part.Position - root.Position).Magnitude
-					if d <= state.collectRange and d < bestDist then
-						best, bestDist, bestKind = {inst = inst, part = part}, d, "click"
-					end
+					itemCache.items[#itemCache.items + 1] = {
+						kind = "click", inst = inst, part = part, name = parent.Name,
+					}
 				end
 			end
 		elseif inst:IsA("BasePart") and matchesKeyword(inst.Name) then
-			local d = (inst.Position - root.Position).Magnitude
-			if d <= state.collectRange and d < bestDist then
-				best, bestDist, bestKind = {inst = inst, part = inst}, d, "touch"
+			itemCache.items[#itemCache.items + 1] = {
+				kind = "touch", inst = inst, part = inst, name = inst.Name,
+			}
+		end
+	end
+end
+
+local function fireItem(item)
+	if item.kind == "prompt" then
+		pcall(function() item.inst:InputHoldBegin() end)
+		pcall(function() item.inst:InputHoldEnd() end)
+	elseif item.kind == "click" then
+		pcall(function() fireclickdetector(item.inst) end)
+	elseif item.kind == "touch" then
+		local root = getRoot()
+		if root then
+			pcall(function()
+				firetouchinterest(root, item.inst, 0)
+				firetouchinterest(root, item.inst, 1)
+			end)
+		end
+	end
+end
+
+--============ PRIORITY (đích danh > từ khoá) ============
+-- exact match = 10000, prefix match = 500 + len,
+-- contains = len (dài hơn = cụ thể hơn)
+local function itemPriority(name)
+	local lower = string.lower(name)
+	for i = 1, #state.keywords do
+		if lower == string.lower(state.keywords[i]) then return 10000 end
+	end
+	local best = 0
+	for i = 1, #state.keywords do
+		local kw = string.lower(state.keywords[i])
+		if string.sub(lower, 1, #kw) == kw then
+			best = math.max(best, 500 + #lower)
+		elseif string.find(lower, kw, 1, true) then
+			best = math.max(best, #lower)
+		end
+	end
+	return best
+end
+
+--============ AUTO COLLECT (priority + closest) ============
+local acAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+	if not state.autoCollect then return end
+	acAccum += dt
+	if acAccum < 0.25 then return end
+	acAccum = 0
+	refreshItems()
+	local char = getChar()
+	if not isAlive(char) then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	local rootPos = root.Position
+
+	local best, bestPri, bestD = nil, -1, math.huge
+	for i = 1, #itemCache.items do
+		local it = itemCache.items[i]
+		local d = (it.part.Position - rootPos).Magnitude
+		if d <= state.collectRange then
+			local pri = itemPriority(it.name)
+			if pri > bestPri or (pri == bestPri and d < bestD) then
+				best, bestPri, bestD = it, pri, d
 			end
 		end
 	end
 
-	if not best then return end
+	if best then
+		if bestD > 4 then
+			root.CFrame = CFrame.new(best.part.Position + Vector3.new(0, 3, 0))
+		end
+		fireItem(best)
+	end
+end)
 
-	-- teleport tức thì tới vật thể
-	if bestDist > 4 then
-		root.CFrame = CFrame.new(best.part.Position + Vector3.new(0, 3, 0))
+--============ TOUCH COLLECT ============
+local tcAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+	if not state.touchCollect then return end
+	tcAccum += dt
+	if tcAccum < 0.2 then return end
+	tcAccum = 0
+	refreshItems()
+	local root = getRoot()
+	if not root then return end
+	local rootPos = root.Position
+	for i = 1, #itemCache.items do
+		local it = itemCache.items[i]
+		if it.kind == "touch" and (it.part.Position - rootPos).Magnitude <= state.collectRange then
+			pcall(function()
+				firetouchinterest(root, it.inst, 0)
+				firetouchinterest(root, it.inst, 1)
+			end)
+		end
+	end
+end)
+
+--============ PULL ITEMS ============
+local function pullItems()
+	refreshItems()
+	local root = getRoot()
+	if not root then return end
+	local rootPos = root.Position
+	local pulled = 0
+	for i = 1, #itemCache.items do
+		local it = itemCache.items[i]
+		if (it.part.Position - rootPos).Magnitude <= state.collectRange then
+			local target = CFrame.new(rootPos + Vector3.new(
+				math.random(-6, 6), 2, math.random(-6, 6)))
+			if it.part:IsA("BasePart") then
+				it.part.CFrame = target
+			elseif it.part.Parent and it.part.Parent:IsA("Model") then
+				pcall(function() it.part.Parent:PivotTo(target) end)
+			end
+			pulled += 1
+		end
+	end
+	return pulled
+end
+
+--============ ESP ============
+local espObjects = {} -- [part] = {hl, bb, tl, category}
+
+local function destroyESPEntry(e)
+	if e.hl then e.hl:Destroy() end
+	if e.bb then e.bb:Destroy() end
+end
+
+local function clearESP()
+	for _, e in pairs(espObjects) do destroyESPEntry(e) end
+	espObjects = {}
+end
+
+local function makeESP(part, name, color, category)
+	local adornee = (part.Parent and part.Parent:IsA("Model")) and part.Parent or part
+	local hl = Instance.new("Highlight")
+	hl.FillColor = color
+	hl.FillTransparency = 0.6
+	hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+	hl.OutlineTransparency = 0
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Adornee = adornee
+	hl.Parent = part
+
+	local bb = Instance.new("BillboardGui")
+	bb.Size = UDim2.new(0, 160, 0, 28)
+	bb.StudsOffset = Vector3.new(0, 2.5, 0)
+	bb.AlwaysOnTop = true
+	bb.Parent = part
+
+	local tl = Instance.new("TextLabel")
+	tl.Size = UDim2.new(1, 0, 1, 0)
+	tl.BackgroundTransparency = 1
+	tl.Text = name
+	tl.TextColor3 = Color3.fromRGB(255, 255, 255)
+	tl.TextStrokeTransparency = 0
+	tl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	tl.Font = Enum.Font.GothamBold
+	tl.TextSize = 14
+	tl.Parent = bb
+
+	return { hl = hl, bb = bb, tl = tl, category = category, name = name }
+end
+
+-- priority: custom > chest > item > player > npc
+local ESP_PRI = { custom = 50, chest = 40, item = 30, player = 20, npc = 10 }
+
+local function syncESP()
+	local targets = {} -- [part] = {name, color, category}
+	local function add(part, name, color, category, pri)
+		local cur = targets[part]
+		if cur and cur.pri >= pri then return end
+		targets[part] = { name = name, color = color, category = category, pri = pri }
 	end
 
-	-- nhặt tức thì, bỏ qua hold
-	if bestKind == "prompt" then
-		pcall(function() best.inst:InputHoldBegin() end)
-		pcall(function() best.inst:InputHoldEnd() end)
-	elseif bestKind == "click" then
-		pcall(function() fireclickdetector(best.inst) end)
-	elseif bestKind == "touch" then
-		pcall(function()
-			firetouchinterest(root, best.inst, 0)
-			firetouchinterest(root, best.inst, 1)
-		end)
+	if state.esp.player then
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LocalPlayer and plr.Character then
+				local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+				if hrp then
+					add(hrp, plr.Name, Color3.fromRGB(255, 60, 60), "player", ESP_PRI.player)
+				end
+			end
+		end
 	end
+
+	if state.esp.npc then
+		refreshCache()
+		for i = 1, #cache.models do
+			local t = cache.models[i]
+			if t.hum.Health > 0 and not Players:GetPlayerFromCharacter(t.model) then
+				add(t.hrp, t.model.Name, Color3.fromRGB(255, 165, 0), "npc", ESP_PRI.npc)
+			end
+		end
+	end
+
+	if state.esp.chest then
+		for _, inst in pairs(workspace:GetDescendants()) do
+			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
+				local parent = inst.Parent
+				if parent then
+					local pname = parent.Name or ""
+					local full = pname .. " " .. ((inst.ObjectText) or "")
+					if string.find(string.lower(full), "chest", 1, true) then
+						local part = getPart(parent)
+						if part then
+							add(part, pname, Color3.fromRGB(255, 215, 0), "chest", ESP_PRI.chest)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if state.esp.item then
+		refreshItems()
+		for i = 1, #itemCache.items do
+			local it = itemCache.items[i]
+			add(it.part, it.name, Color3.fromRGB(0, 255, 100), "item", ESP_PRI.item)
+		end
+	end
+
+	if state.esp.custom and #state.esp.customKeywords > 0 then
+		for _, inst in pairs(workspace:GetDescendants()) do
+			local parent
+			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
+				parent = inst.Parent
+			elseif inst:IsA("Model") then
+				parent = inst
+			end
+			if parent and parent.Name and parent.Name ~= "" then
+				if matchesKeyword(parent.Name, state.esp.customKeywords) then
+					local part = getPart(parent)
+					if part then
+						add(part, parent.Name, Color3.fromRGB(180, 100, 255), "custom", ESP_PRI.custom)
+					end
+				end
+			end
+		end
+	end
+
+	-- xoá ESP không còn match
+	for part, e in pairs(espObjects) do
+		if not targets[part] then
+			destroyESPEntry(e)
+			espObjects[part] = nil
+		elseif e.category ~= targets[part].category then
+			destroyESPEntry(e)
+			espObjects[part] = nil
+		end
+	end
+
+	-- tạo mới
+	for part, info in pairs(targets) do
+		if not espObjects[part] then
+			espObjects[part] = makeESP(part, info.name, info.color, info.category)
+		end
+	end
+end
+
+local espAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+	espAccum += dt
+	if espAccum < 0.4 then return end
+	espAccum = 0
+	local any = state.esp.player or state.esp.npc or state.esp.chest
+		or state.esp.item or state.esp.custom
+	if not any then
+		if next(espObjects) then clearESP() end
+		return
+	end
+	syncESP()
 end)
 
 --============ UI ============
@@ -216,7 +466,6 @@ local function makeUI()
 	gui.IgnoreGuiInset = true
 	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-	-- PANEL
 	local panel = Instance.new("Frame")
 	panel.Size = UDim2.new(0, 250, 0, 340)
 	panel.Position = UDim2.new(0, 16, 0, 60)
@@ -227,28 +476,23 @@ local function makeUI()
 	panel.Draggable = true
 	panel.Parent = gui
 	local pc = Instance.new("UICorner")
-	pc.CornerRadius = UDim.new(0, 12)
-	pc.Parent = panel
+	pc.CornerRadius = UDim.new(0, 12); pc.Parent = panel
 	local ps = Instance.new("UIStroke")
-	ps.Color = Color3.fromRGB(255, 60, 120)
-	ps.Thickness = 1.5
-	ps.Transparency = 0.2
-	ps.Parent = panel
+	ps.Color = Color3.fromRGB(255, 60, 120); ps.Thickness = 1.5
+	ps.Transparency = 0.2; ps.Parent = panel
 
-	-- HEADER
 	local header = Instance.new("Frame")
 	header.Size = UDim2.new(1, 0, 0, 32)
-	header.BackgroundTransparency = 1
-	header.Parent = panel
+	header.BackgroundTransparency = 1; header.Parent = panel
 
 	local title = Instance.new("TextLabel")
 	title.Size = UDim2.new(1, -70, 1, 0)
 	title.Position = UDim2.new(0, 12, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v4"
+	title.Text = "olltaterfx v5.0.1"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
-	title.TextSize = 15
+	title.TextSize = 14
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.Parent = header
 
@@ -263,20 +507,15 @@ local function makeUI()
 	minusBtn.BorderSizePixel = 0
 	minusBtn.Parent = header
 	local mc = Instance.new("UICorner")
-	mc.CornerRadius = UDim.new(1, 0)
-	mc.Parent = minusBtn
+	mc.CornerRadius = UDim.new(1, 0); mc.Parent = minusBtn
 
-	-- TABS
 	local tabBar = Instance.new("Frame")
 	tabBar.Size = UDim2.new(1, -12, 0, 30)
 	tabBar.Position = UDim2.new(0, 6, 0, 34)
 	tabBar.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
-	tabBar.BorderSizePixel = 0
-	tabBar.Parent = panel
+	tabBar.BorderSizePixel = 0; tabBar.Parent = panel
 	local tbc = Instance.new("UICorner")
-	tbc.CornerRadius = UDim.new(0, 8)
-	tbc.Parent = tabBar
-
+	tbc.CornerRadius = UDim.new(0, 8); tbc.Parent = tabBar
 	local tabLayout = Instance.new("UIListLayout")
 	tabLayout.FillDirection = Enum.FillDirection.Horizontal
 	tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -285,31 +524,22 @@ local function makeUI()
 	local tabContent = Instance.new("Frame")
 	tabContent.Size = UDim2.new(1, -12, 1, -76)
 	tabContent.Position = UDim2.new(0, 6, 0, 70)
-	tabContent.BackgroundTransparency = 1
-	tabContent.Parent = panel
+	tabContent.BackgroundTransparency = 1; tabContent.Parent = panel
 
-	-- tab scrolls
 	local tabs = {}
 	local tabDefs = {
-		{ name = "AUTO",  label = "AUTO" },
+		{ name = "AUTO", label = "AUTO" },
 		{ name = "FIGHT", label = "FIGHT" },
-		{ name = "MOVE",  label = "MOVE" },
+		{ name = "MOVE", label = "MOVE" },
+		{ name = "ESP", label = "ESP" },
 	}
-	local activeTabName = "AUTO"
-
 	local function setActiveTab(name)
-		activeTabName = name
 		for n, t in pairs(tabs) do
 			t.scroll.Visible = (n == name)
-			t.btn.BackgroundColor3 = (n == name)
-				and Color3.fromRGB(255, 60, 120)
-				or Color3.fromRGB(25, 25, 32)
-			t.btn.TextColor3 = (n == name)
-				and Color3.fromRGB(255, 255, 255)
-				or Color3.fromRGB(180, 180, 190)
+			t.btn.BackgroundColor3 = (n == name) and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(25, 25, 32)
+			t.btn.TextColor3 = (n == name) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 190)
 		end
 	end
-
 	for i, def in ipairs(tabDefs) do
 		local btn = Instance.new("TextButton")
 		btn.Size = UDim2.new(1 / #tabDefs, 0, 1, 0)
@@ -317,36 +547,29 @@ local function makeUI()
 		btn.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
 		btn.Text = def.label
 		btn.Font = Enum.Font.GothamBold
-		btn.TextSize = 12
+		btn.TextSize = 11
 		btn.TextColor3 = Color3.fromRGB(180, 180, 190)
 		btn.BorderSizePixel = 0
 		btn.AutoButtonColor = false
 		btn.Parent = tabBar
 		local bc = Instance.new("UICorner")
-		bc.CornerRadius = UDim.new(0, 8)
-		bc.Parent = btn
-
+		bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
 		local scroll = Instance.new("ScrollingFrame")
 		scroll.Size = UDim2.new(1, 0, 1, 0)
-		scroll.Position = UDim2.new(0, 0, 0, 0)
 		scroll.BackgroundTransparency = 1
 		scroll.BorderSizePixel = 0
 		scroll.ScrollBarThickness = 4
 		scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 		scroll.Visible = false
 		scroll.Parent = tabContent
-
 		tabs[def.name] = { btn = btn, scroll = scroll }
-
-		btn.MouseButton1Click:Connect(function()
-			setActiveTab(def.name)
-		end)
+		btn.MouseButton1Click:Connect(function() setActiveTab(def.name) end)
 	end
 
-	-- widget builders for a specific scroll
 	local function buildersFor(scroll)
 		local y = 0
-		local function addHeader(text)
+		local b = {}
+		function b.addHeader(text)
 			local h = Instance.new("TextLabel")
 			h.Size = UDim2.new(1, 0, 0, 20)
 			h.Position = UDim2.new(0, 0, 0, y)
@@ -359,13 +582,12 @@ local function makeUI()
 			h.Parent = scroll
 			y += 22
 		end
-		local function addToggle(label, getter, setter)
+		function b.addToggle(label, getter, setter)
 			local row = Instance.new("Frame")
 			row.Size = UDim2.new(1, 0, 0, 38)
 			row.Position = UDim2.new(0, 0, 0, y)
 			row.BackgroundTransparency = 1
 			row.Parent = scroll
-
 			local txt = Instance.new("TextLabel")
 			txt.Size = UDim2.new(1, -70, 1, 0)
 			txt.BackgroundTransparency = 1
@@ -375,87 +597,65 @@ local function makeUI()
 			txt.TextSize = 13
 			txt.TextXAlignment = Enum.TextXAlignment.Left
 			txt.Parent = row
-
 			local pill = Instance.new("Frame")
 			pill.Size = UDim2.new(0, 48, 0, 26)
 			pill.Position = UDim2.new(1, -48, 0.5, -13)
 			pill.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
-			pill.BorderSizePixel = 0
-			pill.Parent = row
+			pill.BorderSizePixel = 0; pill.Parent = row
 			local pcc = Instance.new("UICorner")
-			pcc.CornerRadius = UDim.new(1, 0)
-			pcc.Parent = pill
-
+			pcc.CornerRadius = UDim.new(1, 0); pcc.Parent = pill
 			local knob = Instance.new("Frame")
 			knob.Size = UDim2.new(0, 20, 0, 20)
 			knob.Position = UDim2.new(0, 3, 0.5, -10)
 			knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-			knob.BorderSizePixel = 0
-			knob.Parent = pill
+			knob.BorderSizePixel = 0; knob.Parent = pill
 			local kc = Instance.new("UICorner")
-			kc.CornerRadius = UDim.new(1, 0)
-			kc.Parent = knob
-
+			kc.CornerRadius = UDim.new(1, 0); kc.Parent = knob
 			local btn = Instance.new("TextButton")
 			btn.Size = UDim2.new(1, 0, 1, 0)
 			btn.BackgroundTransparency = 1
-			btn.Text = ""
-			btn.Parent = row
-
+			btn.Text = ""; btn.Parent = row
 			local function render()
 				local on = getter()
 				pill.BackgroundColor3 = on and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(40, 40, 48)
 				knob.Position = on and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
 			end
-			btn.MouseButton1Click:Connect(function()
-				setter(not getter()); render()
-			end)
+			btn.MouseButton1Click:Connect(function() setter(not getter()); render() end)
 			render()
 			y += 42
 		end
-		local function addSlider(label, minV, maxV, getter, setter)
+		function b.addSlider(label, minV, maxV, getter, setter)
 			local frame = Instance.new("Frame")
 			frame.Size = UDim2.new(1, 0, 0, 50)
 			frame.Position = UDim2.new(0, 0, 0, y)
-			frame.BackgroundTransparency = 1
-			frame.Parent = scroll
-
+			frame.BackgroundTransparency = 1; frame.Parent = scroll
 			local lab = Instance.new("TextLabel")
 			lab.Size = UDim2.new(1, 0, 0, 16)
-			lab.BackgroundTransparency = 1
+            lab.BackgroundTransparency = 1
 			lab.Font = Enum.Font.Gotham
 			lab.Text = label .. ": " .. getter()
 			lab.TextColor3 = Color3.fromRGB(200, 200, 200)
 			lab.TextSize = 11
 			lab.TextXAlignment = Enum.TextXAlignment.Left
 			lab.Parent = frame
-
 			local bg = Instance.new("Frame")
 			bg.Size = UDim2.new(1, 0, 0, 10)
 			bg.Position = UDim2.new(0, 0, 0, 28)
 			bg.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
-			bg.BorderSizePixel = 0
-			bg.Parent = frame
+			bg.BorderSizePixel = 0; bg.Parent = frame
 			local bgc = Instance.new("UICorner")
-			bgc.CornerRadius = UDim.new(1, 0)
-			bgc.Parent = bg
-
+			bgc.CornerRadius = UDim.new(1, 0); bgc.Parent = bg
 			local fill = Instance.new("Frame")
 			fill.Size = UDim2.new((getter() - minV) / (maxV - minV), 0, 1, 0)
 			fill.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
-			fill.BorderSizePixel = 0
-			fill.Parent = bg
+			fill.BorderSizePixel = 0; fill.Parent = bg
 			local fc = Instance.new("UICorner")
-			fc.CornerRadius = UDim.new(1, 0)
-			fc.Parent = fill
-
+			fc.CornerRadius = UDim.new(1, 0); fc.Parent = fill
 			local hit = Instance.new("TextButton")
 			hit.Size = UDim2.new(1, 0, 3, 0)
 			hit.Position = UDim2.new(0, 0, -1, 0)
 			hit.BackgroundTransparency = 1
-			hit.Text = ""
-			hit.Parent = bg
-
+			hit.Text = ""; hit.Parent = bg
 			local function setFromX(x)
 				local rel = math.clamp(x / bg.AbsoluteSize.X, 0, 1)
 				local v = math.floor(minV + rel * (maxV - minV))
@@ -467,9 +667,7 @@ local function makeUI()
 			hit.MouseButton1Down:Connect(function() dragging = true end)
 			UserInputService.InputEnded:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton1 or
-					input.UserInputType == Enum.UserInputType.Touch then
-					dragging = false
-				end
+					input.UserInputType == Enum.UserInputType.Touch then dragging = false end
 			end)
 			UserInputService.InputChanged:Connect(function(input)
 				if not dragging then return end
@@ -480,17 +678,14 @@ local function makeUI()
 			end)
 			y += 54
 		end
-		local function addTextBox(label, getter, setter)
+		function b.addTextBox(label, getter, setter)
 			local frame = Instance.new("Frame")
 			frame.Size = UDim2.new(1, 0, 0, 36)
 			frame.Position = UDim2.new(0, 0, 0, y)
 			frame.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
-			frame.BorderSizePixel = 0
-			frame.Parent = scroll
+			frame.BorderSizePixel = 0; frame.Parent = scroll
 			local fc = Instance.new("UICorner")
-			fc.CornerRadius = UDim.new(0, 8)
-			fc.Parent = frame
-
+			fc.CornerRadius = UDim.new(0, 8); fc.Parent = frame
 			local box = Instance.new("TextBox")
 			box.Size = UDim2.new(1, -12, 1, 0)
 			box.Position = UDim2.new(0, 6, 0, 0)
@@ -504,40 +699,70 @@ local function makeUI()
 			box.TextXAlignment = Enum.TextXAlignment.Left
 			box.ClearTextOnFocus = false
 			box.Parent = frame
-
-			box.FocusLost:Connect(function()
-				setter(box.Text)
+			box.FocusLost:Connect(function() setter(box.Text) end)
+			y += 42
+		end
+		function b.addButton(label, callback)
+			local btn = Instance.new("TextButton")
+			btn.Size = UDim2.new(1, 0, 0, 36)
+			btn.Position = UDim2.new(0, 0, 0, y)
+			btn.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
+			btn.Text = label
+			btn.Font = Enum.Font.GothamBold
+			btn.TextSize = 12
+			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+			btn.BorderSizePixel = 0; btn.Parent = scroll
+			local bc = Instance.new("UICorner")
+			bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
+			btn.MouseButton1Click:Connect(function()
+				btn.Text = "· · ·"; task.wait(0.15)
+				callback(); btn.Text = label
 			end)
 			y += 42
 		end
-		local function finish()
+		function b.finish()
 			scroll.CanvasSize = UDim2.new(0, 0, 0, y + 10)
 		end
-		return { addHeader = addHeader, addToggle = addToggle,
-			addSlider = addSlider, addTextBox = addTextBox, finish = finish }
+		return b
 	end
 
-	-- ===== TAB AUTO =====
+	-- ===== AUTO TAB =====
 	do
 		local b = buildersFor(tabs.AUTO.scroll)
-		b.addHeader("AUTO COLLECT (teleport + grab)")
+		b.addHeader("AUTO COLLECT (priority: đích danh > keyword)")
 		b.addToggle("Auto Collect", function() return state.autoCollect end,
 			function(v) state.autoCollect = v end)
+		b.addToggle("Touch Collect", function() return state.touchCollect end,
+			function(v) state.touchCollect = v end)
 		b.addSlider("Collect Range", 10, 500, function() return state.collectRange end,
 			function(v) state.collectRange = v end)
+		b.addHeader("PULL ITEMS (click)")
+		b.addButton("KÉO ITEM VỀ NGƯỜI", function()
+			local n = pullItems()
+			local fb = Instance.new("TextLabel")
+			fb.Size = UDim2.new(1, -12, 0, 30)
+			fb.Position = UDim2.new(0, 6, 0, 300)
+			fb.BackgroundColor3 = Color3.fromRGB(40, 200, 100)
+			fb.Text = "Đã kéo " .. n .. " item"
+			fb.Font = Enum.Font.GothamBold
+			fb.TextSize = 12
+			fb.TextColor3 = Color3.fromRGB(255, 255, 255)
+			fb.Parent = panel
+			local fbc = Instance.new("UICorner")
+			fbc.CornerRadius = UDim.new(0, 6); fbc.Parent = fb
+			task.wait(1.2); fb:Destroy()
+		end)
 		b.addTextBox("chest,fragment,orb,heart,...",
 			function() return table.concat(state.keywords, ",") end,
 			function(text)
 				local list = {}
-				for kw in string.gmatch(text, "[^,%s]+") do
-					table.insert(list, kw)
-				end
+				for kw in string.gmatch(text, "[^,%s]+") do table.insert(list, kw) end
 				if #list > 0 then state.keywords = list end
 			end)
 		b.finish()
 	end
 
-	-- ===== TAB FIGHT =====
+	-- ===== FIGHT TAB =====
 	do
 		local b = buildersFor(tabs.FIGHT.scroll)
 		b.addHeader("KILL AURA PLAYER")
@@ -553,7 +778,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== TAB MOVE =====
+	-- ===== MOVE TAB =====
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
 		b.addHeader("FLY (joystick gốc + xoay cam)")
@@ -569,30 +794,52 @@ local function makeUI()
 		b.finish()
 	end
 
+	-- ===== ESP TAB =====
+	do
+		local b = buildersFor(tabs.ESP.scroll)
+		b.addHeader("ESP CHUẨN")
+		b.addToggle("Player (đỏ)", function() return state.esp.player end,
+			function(v) state.esp.player = v end)
+		b.addToggle("NPC / Quái (cam)", function() return state.esp.npc end,
+			function(v) state.esp.npc = v end)
+		b.addToggle("Chest / Rương (vàng)", function() return state.esp.chest end,
+			function(v) state.esp.chest = v end)
+		b.addToggle("Item keyword (xanh lá)", function() return state.esp.item end,
+			function(v) state.esp.item = v end)
+		b.addHeader("ESP CUSTOM (tím)")
+		b.addToggle("Custom", function() return state.esp.custom end,
+			function(v) state.esp.custom = v end)
+		b.addTextBox("hyper chest,boss,relic,...",
+			function() return table.concat(state.esp.customKeywords, ",") end,
+			function(text)
+				local list = {}
+				for kw in string.gmatch(text, "[^,%s]+") do table.insert(list, kw) end
+				state.esp.customKeywords = list
+			end)
+		b.finish()
+	end
+
 	setActiveTab("AUTO")
 
-	-- ===== BUBBLE (draggable, tap to reopen) =====
+	-- bubble
 	local bubble = Instance.new("TextButton")
 	bubble.Size = UDim2.new(0, 52, 0, 52)
-	bubble.Position = UDim2.new(0, 16, 0, 60)
+	bubble.Position = panel.Position
 	bubble.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
 	bubble.Text = "oll"
 	bubble.Font = Enum.Font.GothamBold
 	bubble.TextSize = 14
 	bubble.TextColor3 = Color3.fromRGB(255, 255, 255)
 	bubble.BorderSizePixel = 0
-	bubble.Visible = false
-	bubble.Parent = gui
+	bubble.Visible = false; bubble.Parent = gui
 	local bc2 = Instance.new("UICorner")
-	bc2.CornerRadius = UDim.new(1, 0)
-	bc2.Parent = bubble
+	bc2.CornerRadius = UDim.new(1, 0); bc2.Parent = bubble
 
 	minusBtn.MouseButton1Click:Connect(function()
 		panel.Visible = false
 		bubble.Position = panel.Position
 		bubble.Visible = true
 	end)
-
 	local dragStart, startPos, moved
 	bubble.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or
@@ -610,8 +857,7 @@ local function makeUI()
 			if delta.Magnitude > 5 then moved = true end
 			bubble.Position = UDim2.new(
 				startPos.X.Scale, startPos.X.Offset + delta.X,
-				startPos.Y.Scale, startPos.Y.Offset + delta.Y
-			)
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(input)
