@@ -1,0 +1,545 @@
+--============================================================
+-- olltaterfx | UNIVERSAL BENCH v3 — SAVED BUILD
+-- kill aura (player/npc) + fly + noclip + auto-collect
+-- float UI mobile | StarterPlayerScripts (LocalScript)
+--============================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+--============ STATE ============
+local state = {
+	killAuraPlayer = false,
+	killAuraNPC = false,
+	fly = false,
+	noclip = false,
+	autoCollect = false,
+	auraRangePlayer = 20,
+	auraRangeNPC = 20,
+	flySpeed = 60,
+	collectRange = 60,
+	moveX = 0,
+	moveZ = 0,
+	keywords = { "chest", "fragment", "orb", "heart", "coin", "gem", "crystal", "egg" },
+}
+
+local function getChar() return LocalPlayer.Character end
+local function isAlive(c)
+	return c and c:FindFirstChild("Humanoid") and c.Humanoid.Health > 0
+end
+
+--============ KILL AURA ============
+RunService.Heartbeat:Connect(function()
+	if not (state.killAuraPlayer or state.killAuraNPC) then return end
+	local char = getChar()
+	if not isAlive(char) then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	for _, obj in pairs(workspace:GetDescendants()) do
+		if obj:IsA("Model") and obj ~= char then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			local hrp = obj:FindFirstChild("HumanoidRootPart")
+			if hum and hrp and hum.Health > 0 then
+				local dist = (hrp.Position - root.Position).Magnitude
+				local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
+				if isPlayer and state.killAuraPlayer and dist <= state.auraRangePlayer then
+					hum.Health = 0
+				elseif (not isPlayer) and state.killAuraNPC and dist <= state.auraRangeNPC then
+					hum.Health = 0
+				end
+			end
+		end
+	end
+end)
+
+--============ FLY ============
+local flyConn, bv, bg
+local function startFly()
+	local char = getChar()
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	bv = Instance.new("BodyVelocity")
+	bv.MaxForce = Vector3.new(1e5,1e5,1e5)
+	bv.Velocity = Vector3.zero
+	bv.Parent = hrp
+
+	bg = Instance.new("BodyGyro")
+	bg.MaxTorque = Vector3.new(1e5,1e5,1e5)
+	bg.P = 9e4
+	bg.CFrame = hrp.CFrame
+	bg.Parent = hrp
+
+	flyConn = RunService.Heartbeat:Connect(function()
+		local cam = workspace.CurrentCamera
+		local move = Vector3.new(state.moveX or 0, 0, state.moveZ or 0)
+		if move.Magnitude > 0 then
+			local dir = (cam.CFrame.LookVector * -move.Z + cam.CFrame.RightVector * move.X)
+			bv.Velocity = dir.Unit * state.flySpeed
+		else
+			bv.Velocity = Vector3.zero
+		end
+		bg.CFrame = cam.CFrame
+	end)
+end
+
+local function stopFly()
+	if flyConn then flyConn:Disconnect() end
+	if bv then bv:Destroy() end
+	if bg then bg:Destroy() end
+end
+
+--============ NOCLIP ============
+RunService.Stepped:Connect(function()
+	if not state.noclip then return end
+	local char = getChar()
+	if not char then return end
+	for _, part in pairs(char:GetDescendants()) do
+		if part:IsA("BasePart") and part.CanCollide then
+			part.CanCollide = false
+		end
+	end
+end)
+
+--============ AUTO COLLECT ============
+local function matchesKeyword(name)
+	local lower = string.lower(name)
+	for _, kw in ipairs(state.keywords) do
+		if string.find(lower, string.lower(kw), 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function firePrompt(prompt)
+	-- bỏ qua hold: input begin + end ngay lập tức
+	if prompt.HoldDuration > 0 then
+		pcall(function() prompt:InputHoldBegin() end)
+		pcall(function() prompt:InputHoldEnd() end)
+	end
+	pcall(function() prompt:InputHoldBegin() end)
+	pcall(function() prompt:InputHoldEnd() end)
+end
+
+local function getPartFromInstance(inst)
+	if inst:IsA("BasePart") then return inst end
+	if inst:IsA("Model") then
+		return inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return inst:FindFirstChildWhichIsA("BasePart", true)
+end
+
+-- scan theo nhịp để tránh lag
+local collectAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+	if not state.autoCollect then return end
+	collectAccum += dt
+	if collectAccum < 0.15 then return end
+	collectAccum = 0
+
+	local char = getChar()
+	if not isAlive(char) then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	-- 1. ProximityPrompt có keyword
+	for _, prompt in pairs(workspace:GetDescendants()) do
+		if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+			local parent = prompt.Parent
+			local name = (parent and parent.Name or "") .. " " .. (prompt.ObjectText or "")
+			if matchesKeyword(name) then
+				local part = getPartFromInstance(parent)
+				if part and (part.Position - root.Position).Magnitude <= state.collectRange then
+					firePrompt(prompt)
+				end
+			end
+		end
+	end
+
+	-- 2. ClickDetector fallback
+	for _, cd in pairs(workspace:GetDescendants()) do
+		if cd:IsA("ClickDetector") then
+			local parent = cd.Parent
+			if parent and matchesKeyword(parent.Name) then
+				local part = getPartFromInstance(parent)
+				if part and (part.Position - root.Position).Magnitude <= state.collectRange then
+					pcall(function() fireclickdetector(cd) end)
+				end
+			end
+		end
+	end
+
+	-- 3. Touch fallback — chạm part
+	for _, part in pairs(workspace:GetDescendants()) do
+		if part:IsA("BasePart") and matchesKeyword(part.Name) then
+			if (part.Position - root.Position).Magnitude <= state.collectRange then
+				pcall(function()
+					firetouchinterest(root, part, 0)
+					firetouchinterest(root, part, 1)
+				end)
+			end
+		end
+	end
+end)
+
+--============ UI ============
+local function makeUI()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "ollBench"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.new(0, 250, 0, 500)
+	panel.Position = UDim2.new(0, 16, 0, 60)
+	panel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+	panel.BackgroundTransparency = 0.1
+	panel.BorderSizePixel = 0
+	panel.Active = true
+	panel.Draggable = true
+	panel.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = panel
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 60, 120)
+	stroke.Thickness = 1.5
+	stroke.Transparency = 0.2
+	stroke.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -40, 0, 30)
+	title.Position = UDim2.new(0, 12, 0, 8)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.Text = "olltaterfx v3"
+	title.TextColor3 = Color3.fromRGB(255, 70, 130)
+	title.TextSize = 16
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = panel
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Size = UDim2.new(0, 24, 0, 24)
+	closeBtn.Position = UDim2.new(1, -30, 0, 6)
+	closeBtn.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
+	closeBtn.Text = "×"
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 16
+	closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	closeBtn.BorderSizePixel = 0
+	closeBtn.Parent = panel
+	local cc = Instance.new("UICorner")
+	cc.CornerRadius = UDim.new(1, 0)
+	cc.Parent = closeBtn
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Size = UDim2.new(1, -20, 1, -50)
+	scroll.Position = UDim2.new(0, 10, 0, 42)
+	scroll.BackgroundTransparency = 1
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 4
+	scroll.CanvasSize = UDim2.new(0, 0, 0, 700)
+	scroll.Parent = panel
+
+	local y = 0
+
+	local function makeHeader(text)
+		local h = Instance.new("TextLabel")
+		h.Size = UDim2.new(1, 0, 0, 22)
+		h.Position = UDim2.new(0, 0, 0, y)
+		h.BackgroundTransparency = 1
+		h.Font = Enum.Font.GothamBold
+		h.Text = text
+		h.TextColor3 = Color3.fromRGB(255, 120, 170)
+		h.TextSize = 12
+		h.TextXAlignment = Enum.TextXAlignment.Left
+		h.Parent = scroll
+		y += 24
+	end
+
+	local function makeToggle(label, getter, setter)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 40)
+		row.Position = UDim2.new(0, 0, 0, y)
+		row.BackgroundTransparency = 1
+		row.Parent = scroll
+
+		local txt = Instance.new("TextLabel")
+		txt.Size = UDim2.new(1, -70, 1, 0)
+		txt.BackgroundTransparency = 1
+		txt.Font = Enum.Font.Gotham
+		txt.Text = label
+		txt.TextColor3 = Color3.fromRGB(230, 230, 230)
+		txt.TextSize = 14
+		txt.TextXAlignment = Enum.TextXAlignment.Left
+		txt.Parent = row
+
+		local pill = Instance.new("Frame")
+		pill.Size = UDim2.new(0, 52, 0, 28)
+		pill.Position = UDim2.new(1, -52, 0.5, -14)
+		pill.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+		pill.BorderSizePixel = 0
+		pill.Parent = row
+		local pc = Instance.new("UICorner")
+		pc.CornerRadius = UDim.new(1, 0)
+		pc.Parent = pill
+
+		local knob = Instance.new("Frame")
+		knob.Size = UDim2.new(0, 22, 0, 22)
+		knob.Position = UDim2.new(0, 3, 0.5, -11)
+		knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		knob.BorderSizePixel = 0
+		knob.Parent = pill
+		local kc = Instance.new("UICorner")
+		kc.CornerRadius = UDim.new(1, 0)
+		kc.Parent = knob
+
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(1, 0, 1, 0)
+		btn.BackgroundTransparency = 1
+		btn.Text = ""
+		btn.Parent = row
+
+		local function render()
+			local on = getter()
+			pill.BackgroundColor3 = on and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(40, 40, 48)
+			knob.Position = on and UDim2.new(1, -25, 0.5, -11) or UDim2.new(0, 3, 0.5, -11)
+		end
+
+		btn.MouseButton1Click:Connect(function()
+			setter(not getter())
+			render()
+		end)
+		render()
+		y += 44
+	end
+
+	local function makeSlider(label, minV, maxV, getter, setter)
+		local frame = Instance.new("Frame")
+		frame.Size = UDim2.new(1, 0, 0, 52)
+		frame.Position = UDim2.new(0, 0, 0, y)
+		frame.BackgroundTransparency = 1
+		frame.Parent = scroll
+
+		local lab = Instance.new("TextLabel")
+		lab.Size = UDim2.new(1, 0, 0, 18)
+		lab.BackgroundTransparency = 1
+		lab.Font = Enum.Font.Gotham
+		lab.Text = label .. ": " .. getter()
+		lab.TextColor3 = Color3.fromRGB(200, 200, 200)
+		lab.TextSize = 12
+		lab.TextXAlignment = Enum.TextXAlignment.Left
+		lab.Parent = frame
+
+		local bg = Instance.new("Frame")
+		bg.Size = UDim2.new(1, 0, 0, 10)
+		bg.Position = UDim2.new(0, 0, 0, 30)
+		bg.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+		bg.BorderSizePixel = 0
+		bg.Parent = frame
+		local bc = Instance.new("UICorner")
+		bc.CornerRadius = UDim.new(1, 0)
+		bc.Parent = bg
+
+		local fill = Instance.new("Frame")
+		fill.Size = UDim2.new((getter() - minV) / (maxV - minV), 0, 1, 0)
+		fill.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
+		fill.BorderSizePixel = 0
+		fill.Parent = bg
+		local fc = Instance.new("UICorner")
+		fc.CornerRadius = UDim.new(1, 0)
+		fc.Parent = fill
+
+		local hit = Instance.new("TextButton")
+		hit.Size = UDim2.new(1, 0, 3, 0)
+		hit.Position = UDim2.new(0, 0, -1, 0)
+		hit.BackgroundTransparency = 1
+		hit.Text = ""
+		hit.Parent = bg
+
+		local function setFromX(x)
+			local rel = math.clamp(x / bg.AbsoluteSize.X, 0, 1)
+			local v = math.floor(minV + rel * (maxV - minV))
+			setter(v)
+			fill.Size = UDim2.new(rel, 0, 1, 0)
+			lab.Text = label .. ": " .. v
+		end
+
+		local dragging = false
+		hit.MouseButton1Down:Connect(function() dragging = true end)
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or
+				input.UserInputType == Enum.UserInputType.Touch then
+				dragging = false
+			end
+		end)
+		UserInputService.InputChanged:Connect(function(input)
+			if not dragging then return end
+			if input.UserInputType == Enum.UserInputType.MouseMovement or
+				input.UserInputType == Enum.UserInputType.Touch then
+				setFromX(input.Position.X - bg.AbsolutePosition.X)
+			end
+		end)
+		y += 56
+	end
+
+	-- ===== AUTO COLLECT =====
+	makeHeader("AUTO COLLECT")
+	makeToggle("Auto Collect", function() return state.autoCollect end,
+		function(v) state.autoCollect = v end)
+	makeSlider("Collect Range", 5, 300, function() return state.collectRange end,
+		function(v) state.collectRange = v end)
+
+	-- ô nhập keyword custom
+	local kwFrame = Instance.new("Frame")
+	kwFrame.Size = UDim2.new(1, 0, 0, 36)
+	kwFrame.Position = UDim2.new(0, 0, 0, y)
+	kwFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+	kwFrame.BorderSizePixel = 0
+	kwFrame.Parent = scroll
+	local kwc = Instance.new("UICorner")
+	kwc.CornerRadius = UDim.new(0, 8)
+	kwc.Parent = kwFrame
+
+	local kwBox = Instance.new("TextBox")
+	kwBox.Size = UDim2.new(1, -12, 1, 0)
+	kwBox.Position = UDim2.new(0, 6, 0, 0)
+	kwBox.BackgroundTransparency = 1
+	kwBox.Font = Enum.Font.Gotham
+	kwBox.Text = table.concat(state.keywords, ",")
+	kwBox.PlaceholderText = "chest,fragment,orb,heart..."
+	kwBox.TextColor3 = Color3.fromRGB(230, 230, 230)
+	kwBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+	kwBox.TextSize = 12
+	kwBox.TextXAlignment = Enum.TextXAlignment.Left
+	kwBox.ClearTextOnFocus = false
+	kwBox.Parent = kwFrame
+
+	kwBox.FocusLost:Connect(function()
+		local newKeywords = {}
+		for kw in string.gmatch(kwBox.Text, "[^,%s]+") do
+			table.insert(newKeywords, kw)
+		end
+		if #newKeywords > 0 then
+			state.keywords = newKeywords
+		end
+	end)
+	y += 42
+
+	-- ===== COMBAT =====
+	makeHeader("COMBAT")
+	makeToggle("Kill Aura Player", function() return state.killAuraPlayer end,
+		function(v) state.killAuraPlayer = v end)
+	makeSlider("Aura Range Player", 5, 200, function() return state.auraRangePlayer end,
+		function(v) state.auraRangePlayer = v end)
+	makeToggle("Kill Aura NPC", function() return state.killAuraNPC end,
+		function(v) state.killAuraNPC = v end)
+	makeSlider("Aura Range NPC", 5, 200, function() return state.auraRangeNPC end,
+		function(v) state.auraRangeNPC = v end)
+
+	-- ===== MOVEMENT =====
+	makeHeader("MOVEMENT")
+	makeToggle("Fly", function() return state.fly end, function(v)
+		state.fly = v
+		if v then startFly() else stopFly() end
+	end)
+	makeSlider("Fly Speed", 20, 300, function() return state.flySpeed end,
+		function(v) state.flySpeed = v end)
+	makeToggle("Noclip", function() return state.noclip end,
+		function(v) state.noclip = v end)
+
+	scroll.CanvasSize = UDim2.new(0, 0, 0, y + 20)
+
+	-- bubble
+	local openBubble = Instance.new("TextButton")
+	openBubble.Size = UDim2.new(0, 50, 0, 50)
+	openBubble.Position = UDim2.new(0, 16, 0, 60)
+	openBubble.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
+	openBubble.Text = "oll"
+	openBubble.Font = Enum.Font.GothamBold
+	openBubble.TextSize = 14
+	openBubble.TextColor3 = Color3.fromRGB(255, 255, 255)
+	openBubble.BorderSizePixel = 0
+	openBubble.Visible = false
+	openBubble.Parent = gui
+	local oc = Instance.new("UICorner")
+	oc.CornerRadius = UDim.new(1, 0)
+	oc.Parent = openBubble
+
+	closeBtn.MouseButton1Click:Connect(function()
+		panel.Visible = false
+		openBubble.Visible = true
+	end)
+	openBubble.MouseButton1Click:Connect(function()
+		openBubble.Visible = false
+		panel.Visible = true
+	end)
+
+	-- joystick
+	local joy = Instance.new("Frame")
+	joy.Size = UDim2.new(0, 130, 0, 130)
+	joy.Position = UDim2.new(1, -150, 1, -160)
+	joy.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	joy.BackgroundTransparency = 0.85
+	joy.BorderSizePixel = 0
+	joy.Visible = false
+	joy.Parent = gui
+	local jc = Instance.new("UICorner")
+	jc.CornerRadius = UDim.new(1, 0)
+	jc.Parent = joy
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.new(0, 50, 0, 50)
+	knob.Position = UDim2.new(0.5, -25, 0.5, -25)
+	knob.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
+	knob.BorderSizePixel = 0
+	knob.Parent = joy
+	local knc = Instance.new("UICorner")
+	knc.CornerRadius = UDim.new(1, 0)
+	knc.Parent = knob
+
+	local joyTouch
+	joy.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			joyTouch = input
+		end
+	end)
+	UserInputService.TouchMoved:Connect(function(input)
+		if not joyTouch or joyTouch ~= input then return end
+		local center = joy.AbsolutePosition + joy.AbsoluteSize / 2
+		local delta = input.Position - center
+		local maxR = joy.AbsoluteSize.X / 2
+		if delta.Magnitude > maxR then delta = delta.Unit * maxR end
+		knob.Position = UDim2.new(0.5, delta.X - 25, 0.5, delta.Y - 25)
+		state.moveX = delta.X / maxR
+		state.moveZ = delta.Y / maxR
+	end)
+	UserInputService.TouchEnded:Connect(function(input)
+		if joyTouch and joyTouch ~= input then return end
+		joyTouch = nil
+		knob.Position = UDim2.new(0.5, -25, 0.5, -25)
+		state.moveX = 0
+		state.moveZ = 0
+	end)
+
+	RunService.Heartbeat:Connect(function()
+		joy.Visible = state.fly
+	end)
+end
+
+makeUI()
+
+LocalPlayer.CharacterAdded:Connect(function()
+	if state.fly then
+		task.wait(1)
+		startFly()
+	end
+end)
