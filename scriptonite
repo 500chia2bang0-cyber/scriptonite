@@ -1,9 +1,8 @@
 --============================================================
--- olltaterfx | UNIVERSAL BENCH v8.1.0
--- REAL kill aura = KILLBOX + Touched (hypolX pattern)
--- + direct NPC health write + break-joints nuke fallback
--- + DISGUISED AURA + NPC FREEZE + JUMP/SPEED/INVIS
--- + ESP + FLY + NOCLIP + AUTO COLLECT
+-- olltaterfx | UNIVERSAL BENCH v9.0.0
+-- Kill aura (killbox+remote shotgun) + DISGUISED + FREEZE
+-- + AUTO FARM (priority) + AUTO OPEN + AUTO DELETE (throttled)
+-- + GRAB TOOLS + JUMP/SPEED/INVIS + FLY + NOCLIP + ESP
 -- StarterPlayerScripts (LocalScript)
 -- (c) olltaterfx — watermark intact, do not redistribute stripped
 --============================================================
@@ -11,31 +10,42 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 
 --============ HIDDEN WATERMARK ============
---#WM:olltaterfx::v8.1::2019::crisper::ofx::0xBADC0DE9::sig=4d9f2e1b
-local _WM = ("olltaterfx|v8.1|2019|ofx"):gsub(".", function(c)
+--#WM:olltaterfx::v9::2019::crisper::ofx::0xC0DE9E01::sig=8a7f1c4d
+local _WM = ("olltaterfx|v9|2019|ofx"):gsub(".", function(c)
 	return string.format("%02x", string.byte(c))
 end)
-local _WMSIG = 0xBADC0DE9
-local function _wmCheck() return _WMSIG == 0xBADC0DE9 end
+local _WMSIG = 0xC0DE9E01
+local function _wmCheck() return _WMSIG == 0xC0DE9E01 end
 _wmCheck()
 
 --============ STATE ============
 local state = {
+	-- toggles
 	killAuraPlayer = false, killAuraNPC = false,
 	disguisedAura = false, npcFreeze = false,
 	fly = false, noclip = false,
 	autoCollect = false, touchCollect = false, tpOnCollect = true,
+	autoFarm = false, autoOpen = false, autoDelete = false, grabTools = false,
+	jumpBoost = false, speedBoost = false, invisible = false,
+	-- values
 	auraRangePlayer = 20, auraRangeNPC = 20,
 	disguiseRange = 18, spamRate = 0.08,
 	freezeRange = 200,
 	flySpeed = 60, collectRange = 200, collectSpeed = 0.25,
-	jumpBoost = false, jumpPower = 100,
-	speedBoost = false, speedValue = 60,
-	invisible = false,
+	jumpPower = 100, speedValue = 60,
+	-- farm timings
+	collectDelay = 0.1, tpDelay = 0.1,
+	openDelay = 0.2, deleteRate = 25,
+	-- lists
 	keywords = { "chest", "fragment", "orb", "heart", "coin", "gem", "crystal", "egg" },
+	priorityList = { "chest", "fragment", "orb", "heart", "coin", "gem" },
+	openList = { "chest" },
+	deleteList = { "Blood Cup", "Oil Cup", "Acid Cup", "Light Cup" },
+	-- esp
 	esp = {
 		player = false, npc = false, chest = false,
 		item = false, custom = false, customKeywords = {},
@@ -66,6 +76,42 @@ local function getPart(inst)
 	return inst:FindFirstChildWhichIsA("BasePart", true)
 end
 
+--============ SETTINGS PERSISTENCE ============
+local SettingsFile = "olltaterfx_v9_settings.json"
+local function hasFS()
+	return type(writefile) == "function" and type(readfile) == "function"
+		and type(isfile) == "function"
+end
+local function loadSettings()
+	if not hasFS() then return end
+	pcall(function()
+		if isfile(SettingsFile) then
+			local loaded = HttpService:JSONDecode(readfile(SettingsFile))
+			if type(loaded) == "table" then
+				for k, v in pairs(loaded) do
+					if state[k] ~= nil then state[k] = v end
+				end
+			end
+		end
+	end)
+end
+local function saveSettings()
+	if not hasFS() then return end
+	pcall(function()
+		writefile(SettingsFile, HttpService:JSONEncode({
+			collectDelay = state.collectDelay,
+			tpDelay = state.tpDelay,
+			openDelay = state.openDelay,
+			deleteRate = state.deleteRate,
+			priorityList = state.priorityList,
+			openList = state.openList,
+			deleteList = state.deleteList,
+			keywords = state.keywords,
+		}))
+	end)
+end
+loadSettings()
+
 --============ SHARED MODEL CACHE ============
 local cache = { models = {}, nextRefresh = 0 }
 local function refreshCache()
@@ -85,45 +131,49 @@ local function refreshCache()
 	end
 end
 
---============ KILLBOX / KILLBRICK (hypolX core) ============
--- Invisible, non-colliding, touchable Part anchored to the player.
--- Touched handler applies math.huge damage + health 0 to any
--- non-player Humanoid it contacts. firetouchinterest drives
--- the contact per NPC. This is the actual hypolX mechanism.
-local killbox = Instance.new("Part")
-killbox.Name = "ollKillbox"
-killbox.Size = Vector3.new(1, 1, 1)
-killbox.Transparency = 1
-killbox.CanCollide = false
-killbox.CanTouch = true
-killbox.CanQuery = false
-killbox.Anchored = true
-killbox.Massless = true
-killbox.Parent = workspace
-
-local function nukeHumanoid(hum)
-	if not hum or hum.Health <= 0 then return end
-	pcall(function() hum:TakeDamage(math.huge) end)
-	pcall(function() if hum.Health > 0 then hum.Health = 0 end end)
-	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
-	pcall(function() hum.PlatformStand = true end)
-end
-
-local function breakJoints(model)
-	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("Motor6D") or d:IsA("JointInstance") or d:IsA("Weld") then
-			pcall(function() d:Destroy() end)
-		end
+--============ REAL NPC KILL AURA ============
+local remoteCache = {}
+local lastRemoteScan = 0
+local function scanRemotes()
+	local now = os.clock()
+	if now - lastRemoteScan < 5 then return end
+	lastRemoteScan = now
+	remoteCache = {}
+	for _, v in pairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+		if v:IsA("RemoteEvent") then table.insert(remoteCache, v) end
+	end
+	for _, v in pairs(workspace:GetDescendants()) do
+		if v:IsA("RemoteEvent") then table.insert(remoteCache, v) end
 	end
 end
 
-killbox.Touched:Connect(function(hit)
-	local model = hit and hit.Parent
-	if not model then return end
-	if Players:GetPlayerFromCharacter(model) then return end
-	local hum = model:FindFirstChildOfClass("Humanoid")
-	if hum then nukeHumanoid(hum) end
-end)
+local function killNPC(model, hum)
+	if not hum or hum.Health <= 0 then return end
+	local hrp = model:FindFirstChild("HumanoidRootPart")
+	pcall(function() hum:TakeDamage(math.huge) end)
+	pcall(function() if hum.Health > 0 then hum.Health = 0 end end)
+	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+	for i = 1, #remoteCache do
+		local r = remoteCache[i]
+		pcall(function() r:FireServer(model) end)
+		pcall(function() r:FireServer(hum) end)
+		pcall(function() r:FireServer(model, math.huge) end)
+		pcall(function() r:FireServer(hum, math.huge) end)
+		pcall(function() r:FireServer(hum, 9999) end)
+		pcall(function() r:FireServer(model, 9999) end)
+		pcall(function() r:FireServer(hrp) end)
+		pcall(function() r:FireServer(hrp, 9999) end)
+		pcall(function() r:FireServer("Hit", hum) end)
+		pcall(function() r:FireServer("Damage", hum, 9999) end)
+		pcall(function() r:FireServer("TakeDamage", hum, math.huge) end)
+	end
+	for _, v in pairs(model:GetDescendants()) do
+		if v:IsA("Motor6D") or v:IsA("Weld") or v:IsA("JointInstance") then
+			pcall(function() v:Destroy() end)
+		end
+	end
+	if hrp then pcall(function() hrp.CFrame = CFrame.new(0, -5000, 0) end) end
+end
 
 local kaAccum = 0
 local function npcAuraTick()
@@ -132,49 +182,28 @@ local function npcAuraTick()
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local rootPos = root.Position
-	-- follow the player
-	killbox.CFrame = CFrame.new(rootPos)
-
+	scanRemotes()
 	for i = 1, #cache.models do
 		local t = cache.models[i]
 		if t.hum.Health > 0 and t.hrp then
 			local d = (t.hrp.Position - rootPos).Magnitude
 			local isPlayer = Players:GetPlayerFromCharacter(t.model) ~= nil
-			local inRange = (isPlayer and state.killAuraPlayer and d <= state.auraRangePlayer)
-				or (not isPlayer and state.killAuraNPC and d <= state.auraRangeNPC)
-			if inRange then
-				-- 1) THE KILLBOX MOVE: fire touch both ways
-				pcall(function()
-					firetouchinterest(killbox, t.hrp, 0)
-					firetouchinterest(killbox, t.hrp, 1)
-				end)
-				-- 2) DIRECT nuke (works on NPCs — they accept client health writes)
-				if not isPlayer then
-					nukeHumanoid(t.hum)
-					pcall(function() breakJoints(t.model) end)
-				else
-					-- players: try damage remotes
-					for _, r in ipairs(t.model:GetDescendants()) do
-						if r:IsA("RemoteEvent") then
-							local n = string.lower(r.Name)
-							if n:find("damage") or n:find("hit") or n:find("take") then
-								pcall(function() r:FireServer(9999, t.hrp) end)
-								pcall(function() r:FireServer(9999) end)
-							end
-						end
-					end
+			if isPlayer then
+				if state.killAuraPlayer and d <= state.auraRangePlayer then
+					killNPC(t.model, t.hum)
+				end
+			else
+				if state.killAuraNPC and d <= state.auraRangeNPC then
+					killNPC(t.model, t.hum)
 				end
 			end
 		end
 	end
 end
 RunService.Heartbeat:Connect(function(dt)
-	if not (state.killAuraPlayer or state.killAuraNPC) then
-		killbox.CFrame = CFrame.new(0, -100, 0)
-		return
-	end
+	if not (state.killAuraPlayer or state.killAuraNPC) then return end
 	kaAccum += dt
-	if kaAccum < 0.05 then return end
+	if kaAccum < 0.08 then return end
 	kaAccum = 0
 	refreshCache()
 	npcAuraTick()
@@ -303,19 +332,14 @@ local function applyJump()
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if not hum then return end
 	if state.jumpBoost then
-		pcall(function()
-			hum.UseJumpPower = true
-			hum.JumpPower = state.jumpPower
-		end)
+		pcall(function() hum.UseJumpPower = true; hum.JumpPower = state.jumpPower end)
 	end
 end
 local function applySpeed()
 	local char = getChar()
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if not hum then return end
-	if state.speedBoost then
-		pcall(function() hum.WalkSpeed = state.speedValue end)
-	end
+	if state.speedBoost then pcall(function() hum.WalkSpeed = state.speedValue end) end
 end
 local function applyInvis()
 	local char = getChar()
@@ -398,7 +422,15 @@ RunService.Stepped:Connect(function()
 	end
 end)
 
---============ ITEM CACHE ============
+--============ DELETE FOLDER ============
+local DeleteFolder = workspace:FindFirstChild("OLLDELETEDFOLDER")
+if not DeleteFolder then
+	DeleteFolder = Instance.new("Folder")
+	DeleteFolder.Name = "OLLDELETEDFOLDER"
+	DeleteFolder.Parent = workspace
+end
+
+--============ ITEM CACHE (quick collect) ============
 local itemCache = { items = {}, nextRefresh = 0 }
 local function refreshItems()
 	local now = os.clock()
@@ -452,14 +484,15 @@ local function fireItem(item)
 	end
 end
 
-local function itemPriority(name)
+local function itemPriority(name, list)
+	list = list or state.keywords
 	local lower = string.lower(name)
-	for i = 1, #state.keywords do
-		if lower == string.lower(state.keywords[i]) then return 10000 end
+	for i = 1, #list do
+		if lower == string.lower(list[i]) then return 10000 end
 	end
 	local best = 0
-	for i = 1, #state.keywords do
-		local kw = string.lower(state.keywords[i])
+	for i = 1, #list do
+		local kw = string.lower(list[i])
 		if string.sub(lower, 1, #kw) == kw then
 			best = math.max(best, 500 + #lower)
 		elseif string.find(lower, kw, 1, true) then
@@ -469,6 +502,7 @@ local function itemPriority(name)
 	return best
 end
 
+--============ QUICK AUTO COLLECT (keywords) ============
 local acAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.autoCollect then return end
@@ -502,6 +536,7 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
+--============ TOUCH COLLECT ============
 local tcAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.touchCollect then return end
@@ -522,27 +557,174 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 	end
 end)
-
-local function pullItems()
-	refreshItems()
-	local root = getRoot()
-	if not root then return end
-	local rootPos = root.Position
-	local pulled = 0
-	for i = 1, #itemCache.items do
-		local it = itemCache.items[i]
-		if (it.part.Position - rootPos).Magnitude <= state.collectRange then
-			local target = CFrame.new(rootPos + Vector3.new(
-				math.random(-6, 6), 2, math.random(-6, 6)))
-			if it.part:IsA("BasePart") then
-				it.part.CFrame = target
-			elseif it.part.Parent and it.part.Parent:IsA("Model") then
-				pcall(function() it.part.Parent:PivotTo(target) end)
-			end
-			pulled += 1
+--============ AUTO FARM (priority scan + TP + fire prompt) ============
+-- Walks workspace (or workspace.chests if it exists), finds every
+-- ProximityPrompt whose parent name matches a keyword in priorityList,
+-- ranks by priority index then distance, TPs to top target, fires.
+local function farmRank(name)
+	local lower = string.lower(name)
+	for i = 1, #state.priorityList do
+		if string.find(lower, string.lower(state.priorityList[i]), 1, true) then
+			return i
 		end
 	end
-	return pulled
+	return nil
+end
+
+local function scanFarmTargets()
+	local targets = {}
+	local root = getRoot()
+	if not root then return targets end
+	local rp = root.Position
+	local container = workspace:FindFirstChild("chests") or workspace
+	for _, d in ipairs(container:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			local parent = d.Parent
+			if parent then
+				local pname = (parent.Name or "") .. " " .. (d.ObjectText or "")
+				local rank = farmRank(pname)
+				if rank then
+					local part = getPart(parent)
+					if part then
+						local dist = (part.Position - rp).Magnitude
+						targets[#targets + 1] = {
+							prompt = d, part = part, pos = part.Position,
+							rank = rank, dist = dist,
+						}
+					end
+				end
+			end
+		end
+	end
+	table.sort(targets, function(a, b)
+		if a.rank ~= b.rank then return a.rank < b.rank end
+		return a.dist < b.dist
+	end)
+	return targets
+end
+
+local function autoFarmLoop()
+	while state.autoFarm do
+		local targets = scanFarmTargets()
+		if #targets > 0 then
+			local t = targets[1]
+			local root = getRoot()
+			if root then
+				pcall(function()
+					root.CFrame = CFrame.new(t.pos + Vector3.new(0, 3, 0))
+				end)
+				task.wait(state.tpDelay)
+				pcall(function()
+					if fireproximityprompt then
+						fireproximityprompt(t.prompt)
+					else
+						t.prompt:InputHoldBegin()
+						t.prompt:InputHoldEnd()
+					end
+				end)
+				task.wait(state.collectDelay)
+			else
+				task.wait(0.2)
+			end
+		else
+			task.wait(0.25)
+		end
+	end
+end
+
+--============ AUTO OPEN (priority list) ============
+local function openRank(name)
+	local lower = string.lower(name)
+	for i = 1, #state.openList do
+		if string.find(lower, string.lower(state.openList[i]), 1, true) then
+			return i
+		end
+	end
+	return nil
+end
+
+local function autoOpenLoop()
+	while state.autoOpen do
+		local char = getChar()
+		local bp = LocalPlayer:FindFirstChild("Backpack")
+		if char and bp then
+			local tools = {}
+			for _, t in ipairs(bp:GetChildren()) do
+				if t:IsA("Tool") then
+					local r = openRank(t.Name)
+					if r then table.insert(tools, { tool = t, rank = r }) end
+				end
+			end
+			table.sort(tools, function(a, b) return a.rank < b.rank end)
+			for _, entry in ipairs(tools) do
+				if not state.autoOpen then break end
+				pcall(function()
+					entry.tool.Parent = char
+					task.wait(0.05)
+					entry.tool:Activate()
+					task.wait(state.openDelay)
+					if entry.tool.Parent == char then entry.tool.Parent = bp end
+				end)
+			end
+		end
+		task.wait(0.2)
+	end
+end
+
+--============ AUTO DELETE (throttled N/sec) ============
+-- Splits deleteRate into bursts of ~10 ticks/sec.
+-- Only moves matching tools to OLLDELETEDFOLDER, never destroys.
+local function autoDeleteLoop()
+	while state.autoDelete do
+		local perTick = math.max(1, math.floor(state.deleteRate / 10))
+		local deleted = 0
+		local char = getChar()
+		local bp = LocalPlayer:FindFirstChild("Backpack")
+		local function sweep(container)
+			if not container then return end
+			for _, tool in ipairs(container:GetChildren()) do
+				if deleted >= perTick then return end
+				if tool:IsA("Tool") then
+					for _, name in ipairs(state.deleteList) do
+						if tool.Name == name then
+							pcall(function() tool.Parent = DeleteFolder end)
+							deleted += 1
+							break
+						end
+					end
+				end
+			end
+		end
+		if bp then sweep(bp) end
+		if char then sweep(char) end
+		task.wait(0.1)
+	end
+end
+
+--============ GRAB TOOLS ============
+local grabConns = {}
+local function grabTool(child)
+	local char = getChar()
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum and child:IsA("BackpackItem") and child:FindFirstChild("Handle") then
+		pcall(function() hum:EquipTool(child) end)
+	end
+end
+local function startGrabTools()
+	local container = workspace:FindFirstChild("chests") or workspace
+	grabConns[1] = container.DescendantAdded:Connect(function(child)
+		if state.grabTools then grabTool(child) end
+	end)
+	grabConns[2] = workspace.ChildAdded:Connect(function(child)
+		if state.grabTools then grabTool(child) end
+	end)
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d:IsA("BackpackItem") then grabTool(d) end
+	end
+end
+local function stopGrabTools()
+	for _, c in ipairs(grabConns) do if c then c:Disconnect() end end
+	grabConns = {}
 end
 
 --============ ESP ============
@@ -663,7 +845,7 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 	syncESP()
 end)
---============ UI ============
+--============ UI HELPERS ============
 local function makeUI()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "ollBench"; gui.ResetOnSpawn = false
@@ -671,7 +853,7 @@ local function makeUI()
 	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.new(0, 250, 0, 400)
+	panel.Size = UDim2.new(0, 250, 0, 440)
 	panel.Position = UDim2.new(0, 16, 0, 60)
 	panel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 	panel.BackgroundTransparency = 0.05
@@ -690,7 +872,7 @@ local function makeUI()
 	title.Position = UDim2.new(0, 12, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v8.1.0"
+	title.Text = "olltaterfx v9.0.0"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
 	title.TextSize = 14
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -712,10 +894,6 @@ local function makeUI()
 	tabBar.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
 	tabBar.BorderSizePixel = 0; tabBar.Parent = panel
 	local tbc = Instance.new("UICorner"); tbc.CornerRadius = UDim.new(0, 8); tbc.Parent = tabBar
-	local tabLayout = Instance.new("UIListLayout")
-	tabLayout.FillDirection = Enum.FillDirection.Horizontal
-	tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	tabLayout.Parent = tabBar
 
 	local tabContent = Instance.new("Frame")
 	tabContent.Size = UDim2.new(1, -12, 1, -76)
@@ -854,6 +1032,19 @@ local function makeUI()
 			end)
 			y += 54
 		end
+		function b.addButton(label, callback)
+			local btn = Instance.new("TextButton")
+			btn.Size = UDim2.new(1, 0, 0, 32)
+			btn.Position = UDim2.new(0, 0, 0, y)
+			btn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
+			btn.Text = label
+			btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
+			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+			btn.BorderSizePixel = 0; btn.Parent = scroll
+			local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
+			btn.MouseButton1Click:Connect(function() callback() end)
+			y += 36
+		end
 		function b.addTextBox(label, getter, setter)
 			local frame = Instance.new("Frame")
 			frame.Size = UDim2.new(1, 0, 0, 36)
@@ -874,30 +1065,216 @@ local function makeUI()
 			box.FocusLost:Connect(function() setter(box.Text) end)
 			y += 42
 		end
-		function b.addButton(label, callback)
-			local btn = Instance.new("TextButton")
-			btn.Size = UDim2.new(1, 0, 0, 36)
-			btn.Position = UDim2.new(0, 0, 0, y)
-			btn.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
-			btn.Text = label; btn.Font = Enum.Font.GothamBold; btn.TextSize = 12
-			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-			btn.BorderSizePixel = 0; btn.Parent = scroll
-			local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
-			btn.MouseButton1Click:Connect(function()
-				btn.Text = "· · ·"; task.wait(0.15)
-				callback(); btn.Text = label
-			end)
-			y += 42
-		end
 		function b.finish() scroll.CanvasSize = UDim2.new(0, 0, 0, y + 10) end
 		return b
 	end
 
-	-- AUTO
+	--============ LIST MANAGER (priority arrows) ============
+	local function createListManager(listTable, withPriority, onClose)
+		local M = Instance.new("Frame")
+		M.Size = UDim2.new(1, -12, 1, -76)
+		M.Position = UDim2.new(0, 6, 0, 70)
+		M.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+		M.BorderSizePixel = 0
+		M.Visible = false
+		M.ZIndex = 20
+		M.Parent = panel
+		local cM = Instance.new("UICorner"); cM.CornerRadius = UDim.new(0, 8); cM.Parent = M
+
+		local close = Instance.new("TextButton")
+		close.Size = UDim2.new(0, 22, 0, 22)
+		close.Position = UDim2.new(1, -26, 0, 4)
+		close.Text = "×"
+		close.BackgroundTransparency = 1
+		close.TextColor3 = Color3.fromRGB(255, 100, 100)
+		close.TextSize = 20
+		close.Font = Enum.Font.GothamBold
+		close.ZIndex = 21
+		close.Parent = M
+		close.MouseButton1Click:Connect(function()
+			M.Visible = false
+			if onClose then onClose() end
+		end)
+
+		local input = Instance.new("TextBox")
+		input.Size = UDim2.new(1, -55, 0, 26)
+		input.Position = UDim2.new(0, 5, 0, 6)
+		input.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+		input.TextColor3 = Color3.fromRGB(255, 255, 255)
+		input.PlaceholderText = withPriority and "priority keyword..." or "name..."
+		input.Text = ""
+		input.Font = Enum.Font.Gotham
+		input.TextSize = 12
+		input.ZIndex = 21
+		input.Parent = M
+		local ci = Instance.new("UICorner"); ci.CornerRadius = UDim.new(0, 4); ci.Parent = input
+
+		local addBtn = Instance.new("TextButton")
+		addBtn.Size = UDim2.new(0, 30, 0, 26)
+		addBtn.Position = UDim2.new(1, -35, 0, 6)
+		addBtn.Text = "+"
+		addBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 40)
+		addBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		addBtn.Font = Enum.Font.GothamBold
+		addBtn.TextSize = 16
+		addBtn.ZIndex = 21
+		addBtn.Parent = M
+		local ca = Instance.new("UICorner"); ca.CornerRadius = UDim.new(0, 4); ca.Parent = addBtn
+
+		local scroll = Instance.new("ScrollingFrame")
+		scroll.Size = UDim2.new(1, -10, 1, -42)
+		scroll.Position = UDim2.new(0, 5, 0, 38)
+		scroll.BackgroundTransparency = 1
+		scroll.ScrollBarThickness = 4
+		scroll.ZIndex = 21
+		scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+		scroll.Parent = M
+		local list = Instance.new("UIListLayout")
+		list.SortOrder = Enum.SortOrder.LayoutOrder
+		list.Padding = UDim.new(0, 2)
+		list.Parent = scroll
+
+		local function refresh()
+			for _, v in ipairs(scroll:GetChildren()) do
+				if v:IsA("Frame") then v:Destroy() end
+			end
+			for i, item in ipairs(listTable) do
+				local row = Instance.new("Frame")
+				row.Size = UDim2.new(1, 0, 0, 22)
+				row.BackgroundTransparency = 1
+				row.LayoutOrder = i
+				row.ZIndex = 22
+				row.Parent = scroll
+
+				local lbl = Instance.new("TextLabel")
+				lbl.Size = UDim2.new(1, withPriority and -80 or -25, 1, 0)
+				lbl.BackgroundTransparency = 1
+				lbl.Text = (withPriority and (i .. ". ") or "") .. item
+				lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+				lbl.TextXAlignment = Enum.TextXAlignment.Left
+				lbl.Font = Enum.Font.Gotham
+				lbl.TextSize = 12
+				lbl.ZIndex = 22
+				lbl.Parent = row
+
+				if withPriority then
+					local up = Instance.new("TextButton")
+					up.Size = UDim2.new(0, 20, 0, 22)
+					up.Position = UDim2.new(1, -80, 0, 0)
+					up.Text = "▲"
+					up.BackgroundTransparency = 1
+					up.TextColor3 = Color3.fromRGB(100, 200, 255)
+					up.TextSize = 12
+					up.Font = Enum.Font.GothamBold
+					up.ZIndex = 23
+					up.Parent = row
+					up.MouseButton1Click:Connect(function()
+						if i > 1 then
+							listTable[i], listTable[i-1] = listTable[i-1], listTable[i]
+							saveSettings(); refresh()
+						end
+					end)
+
+					local dn = Instance.new("TextButton")
+					dn.Size = UDim2.new(0, 20, 0, 22)
+					dn.Position = UDim2.new(1, -55, 0, 0)
+					dn.Text = "▼"
+					dn.BackgroundTransparency = 1
+					dn.TextColor3 = Color3.fromRGB(100, 200, 255)
+					dn.TextSize = 12
+					dn.Font = Enum.Font.GothamBold
+					dn.ZIndex = 23
+					dn.Parent = row
+					dn.MouseButton1Click:Connect(function()
+						if i < #listTable then
+							listTable[i], listTable[i+1] = listTable[i+1], listTable[i]
+							saveSettings(); refresh()
+						end
+					end)
+				end
+
+				local del = Instance.new("TextButton")
+				del.Size = UDim2.new(0, 20, 0, 22)
+				del.Position = UDim2.new(1, -25, 0, 0)
+				del.Text = "×"
+				del.BackgroundTransparency = 1
+				del.TextColor3 = Color3.fromRGB(255, 100, 100)
+				del.TextSize = 14
+				del.Font = Enum.Font.GothamBold
+				del.ZIndex = 23
+				del.Parent = row
+				del.MouseButton1Click:Connect(function()
+					table.remove(listTable, i)
+					saveSettings(); refresh()
+				end)
+			end
+			scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y)
+		end
+
+		addBtn.MouseButton1Click:Connect(function()
+			if input.Text ~= "" then
+				table.insert(listTable, input.Text)
+				input.Text = ""
+				saveSettings(); refresh()
+			end
+		end)
+
+		refresh()
+		return M
+	end
+
+	local priorityMgr = createListManager(state.priorityList, true)
+	local openMgr = createListManager(state.openList, true)
+	local deleteMgr = createListManager(state.deleteList, false)
+
+	local function hideAllManagers()
+		priorityMgr.Visible = false
+		openMgr.Visible = false
+		deleteMgr.Visible = false
+	end
+
+	-- ===== AUTO =====
 	do
 		local b = buildersFor(tabs.AUTO.scroll)
-		b.addHeader("AUTO COLLECT")
-		b.addToggle("Auto Collect", function() return state.autoCollect end,
+		b.addHeader("AUTO FARM (priority list)")
+		b.addToggle("Auto Farm", function() return state.autoFarm end, function(v)
+			state.autoFarm = v
+			if v then spawn(autoFarmLoop) end
+		end)
+		b.addButton("[ Edit Priority List ]", function()
+			hideAllManagers(); priorityMgr.Visible = true
+		end)
+		b.addSlider("TP Delay (s)", 0.05, 2.0, function() return state.tpDelay end,
+			function(v) state.tpDelay = v; saveSettings() end, true)
+		b.addSlider("Collect Delay (s)", 0.05, 2.0, function() return state.collectDelay end,
+			function(v) state.collectDelay = v; saveSettings() end, true)
+		b.addHeader("AUTO OPEN")
+		b.addToggle("Auto Open", function() return state.autoOpen end, function(v)
+			state.autoOpen = v
+			if v then spawn(autoOpenLoop) end
+		end)
+		b.addButton("[ Edit Open List ]", function()
+			hideAllManagers(); openMgr.Visible = true
+		end)
+		b.addSlider("Open Delay (s)", 0.05, 2.0, function() return state.openDelay end,
+			function(v) state.openDelay = v; saveSettings() end, true)
+		b.addHeader("AUTO DELETE (throttled)")
+		b.addToggle("Auto Delete", function() return state.autoDelete end, function(v)
+			state.autoDelete = v
+			if v then spawn(autoDeleteLoop) end
+		end)
+		b.addButton("[ Edit Delete List ]", function()
+			hideAllManagers(); deleteMgr.Visible = true
+		end)
+		b.addSlider("Delete Rate (/s)", 1, 100, function() return state.deleteRate end,
+			function(v) state.deleteRate = v; saveSettings() end)
+		b.addHeader("GRAB TOOLS")
+		b.addToggle("Grab Tools (auto-equip)", function() return state.grabTools end, function(v)
+			state.grabTools = v
+			if v then startGrabTools() else stopGrabTools() end
+		end)
+		b.addHeader("QUICK COLLECT")
+		b.addToggle("Auto Collect (keywords)", function() return state.autoCollect end,
 			function(v) state.autoCollect = v end)
 		b.addToggle("TP khi nhặt", function() return state.tpOnCollect end,
 			function(v) state.tpOnCollect = v end)
@@ -907,34 +1284,20 @@ local function makeUI()
 			function(v) state.collectRange = v end)
 		b.addSlider("Collect Speed (s)", 0.05, 1.0, function() return state.collectSpeed end,
 			function(v) state.collectSpeed = v end, true)
-		b.addHeader("PULL ITEMS")
-		b.addButton("KÉO ITEM VỀ NGƯỜI", function()
-			local n = pullItems()
-			local fb = Instance.new("TextLabel")
-			fb.Size = UDim2.new(1, -12, 0, 30)
-			fb.Position = UDim2.new(0, 6, 0, 360)
-			fb.BackgroundColor3 = Color3.fromRGB(40, 200, 100)
-			fb.Text = "Đã kéo " .. n .. " item"
-			fb.Font = Enum.Font.GothamBold; fb.TextSize = 12
-			fb.TextColor3 = Color3.fromRGB(255, 255, 255)
-			fb.Parent = panel
-			local fbc = Instance.new("UICorner"); fbc.CornerRadius = UDim.new(0, 6); fbc.Parent = fb
-			task.wait(1.2); fb:Destroy()
-		end)
-		b.addTextBox("chest,fragment,orb,heart,...",
+		b.addTextBox("chest,fragment,orb,...",
 			function() return table.concat(state.keywords, ",") end,
 			function(text)
 				local list = {}
 				for kw in string.gmatch(text, "[^,%s]+") do table.insert(list, kw) end
-				if #list > 0 then state.keywords = list end
+				if #list > 0 then state.keywords = list; saveSettings() end
 			end)
 		b.finish()
 	end
 
-	-- FIGHT
+	-- ===== FIGHT =====
 	do
 		local b = buildersFor(tabs.FIGHT.scroll)
-		b.addHeader("KILL AURA — KILLBOX (Touched)")
+		b.addHeader("KILL AURA — NPC + PLAYER")
 		b.addToggle("Player", function() return state.killAuraPlayer end,
 			function(v) state.killAuraPlayer = v end)
 		b.addSlider("Player Range", 5, 300, function() return state.auraRangePlayer end,
@@ -958,7 +1321,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- MOVE
+	-- ===== MOVE =====
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
 		b.addHeader("SPEED BOOST")
@@ -989,7 +1352,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ESP
+		-- ===== ESP =====
 	do
 		local b = buildersFor(tabs.ESP.scroll)
 		b.addHeader("ESP")
@@ -1016,6 +1379,7 @@ local function makeUI()
 
 	setActiveTab("AUTO")
 
+	-- bubble
 	local bubble = Instance.new("TextButton")
 	bubble.Size = UDim2.new(0, 52, 0, 52)
 	bubble.Position = panel.Position
@@ -1067,11 +1431,11 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 --============ FINAL SEAL ============
--- sig: olltaterfx|v8.1|ofx|crisper2019|4d9f2e1b
-local _SEAL = { "olltaterfx", "v8.1", "ofx", "crisper2019", "4d9f2e1b" }
+-- sig: olltaterfx|v9|ofx|crisper2019|8a7f1c4d
+local _SEAL = { "olltaterfx", "v9", "ofx", "crisper2019", "8a7f1c4d" }
 local _sig = table.concat(_SEAL, "|")
 local _hash = 0
 for i = 1, #_sig do _hash = (_hash * 31 + string.byte(_sig, i)) % 0xFFFFFFFF end
-if _hash ~= 0xE92A15B7 then
+if _hash ~= 0x9F2B3A6D then
 	warn("[olltaterfx] file signature mismatch — got altered copy?")
 end
