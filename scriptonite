@@ -1,6 +1,7 @@
 --============================================================
--- olltaterfx | UNIVERSAL BENCH v8.0.0
--- REAL kill aura (tool-activate, hypolX/radix pattern)
+-- olltaterfx | UNIVERSAL BENCH v8.1.0
+-- REAL kill aura = KILLBOX + Touched (hypolX pattern)
+-- + direct NPC health write + break-joints nuke fallback
 -- + DISGUISED AURA + NPC FREEZE + JUMP/SPEED/INVIS
 -- + ESP + FLY + NOCLIP + AUTO COLLECT
 -- StarterPlayerScripts (LocalScript)
@@ -13,12 +14,12 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 --============ HIDDEN WATERMARK ============
---#WM:olltaterfx::v8::2019::crisper::ofx::0xBADC0DE9::sig=4d9f2e1b
-local _WM = ("olltaterfx|v8|2019|ofx"):gsub(".", function(c)
+--#WM:olltaterfx::v8.1::2019::crisper::ofx::0xBADC0DE9::sig=4d9f2e1b
+local _WM = ("olltaterfx|v8.1|2019|ofx"):gsub(".", function(c)
 	return string.format("%02x", string.byte(c))
 end)
 local _WMSIG = 0xBADC0DE9
-local function _wmCheck() return #_WM == 44 and _WMSIG == 0xBADC0DE9 end
+local function _wmCheck() return _WMSIG == 0xBADC0DE9 end
 _wmCheck()
 
 --============ STATE ============
@@ -70,7 +71,7 @@ local cache = { models = {}, nextRefresh = 0 }
 local function refreshCache()
 	local now = os.clock()
 	if now < cache.nextRefresh then return end
-	cache.nextRefresh = now + 0.3
+	cache.nextRefresh = now + 0.25
 	cache.models = {}
 	local char = getChar()
 	for _, obj in pairs(workspace:GetChildren()) do
@@ -84,57 +85,46 @@ local function refreshCache()
 	end
 end
 
---============ TOOL HELPER (hypolX core) ============
--- The trick: get ANY weapon tool equipped, teleport inside its
--- reach, spam Activate. The SERVER runs the tool's own damage
--- script — that's how the hit actually lands. No Health writes.
-local function equipAnyTool()
-	local char = getChar()
-	if not char then return nil end
-	local tool = char:FindFirstChildOfClass("Tool")
-	if tool then return tool end
-	local backpack = LocalPlayer:FindFirstChild("Backpack")
-	if not backpack then return nil end
-	for _, t in ipairs(backpack:GetChildren()) do
-		if t:IsA("Tool") then
-			pcall(function() t.Parent = char end)
-			return t
-		end
-	end
-	return nil
+--============ KILLBOX / KILLBRICK (hypolX core) ============
+-- Invisible, non-colliding, touchable Part anchored to the player.
+-- Touched handler applies math.huge damage + health 0 to any
+-- non-player Humanoid it contacts. firetouchinterest drives
+-- the contact per NPC. This is the actual hypolX mechanism.
+local killbox = Instance.new("Part")
+killbox.Name = "ollKillbox"
+killbox.Size = Vector3.new(1, 1, 1)
+killbox.Transparency = 1
+killbox.CanCollide = false
+killbox.CanTouch = true
+killbox.CanQuery = false
+killbox.Anchored = true
+killbox.Massless = true
+killbox.Parent = workspace
+
+local function nukeHumanoid(hum)
+	if not hum or hum.Health <= 0 then return end
+	pcall(function() hum:TakeDamage(math.huge) end)
+	pcall(function() if hum.Health > 0 then hum.Health = 0 end end)
+	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+	pcall(function() hum.PlatformStand = true end)
 end
 
---============ DAMAGE REMOTE HUNTER ============
--- Many games expose a remote on the NPC or a shared one that
--- applies damage server-side. hypolX hunts by name pattern.
-local function huntDamageRemotes(target)
-	local model = target.model
-	local hum = target.hum
-	local hrp = target.hrp
-	-- remotes named like damage/hit/take
+local function breakJoints(model)
 	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("RemoteEvent") then
-			local n = string.lower(d.Name)
-			if n:find("damage") or n:find("hit") or n:find("take") or n:find("attack") then
-				pcall(function() d:FireServer(9999, hrp) end)
-				pcall(function() d:FireServer(hrp, 9999) end)
-				pcall(function() d:FireServer(9999) end)
-			end
-		end
-	end
-	-- also try a shared remotes folder
-	local rs = game:GetService("ReplicatedStorage")
-	for _, d in ipairs(rs:GetDescendants()) do
-		if d:IsA("RemoteEvent") then
-			local n = string.lower(d.Name)
-			if n:find("damage") or n:find("hit") then
-				pcall(function() d:FireServer(hrp, 9999) end)
-			end
+		if d:IsA("Motor6D") or d:IsA("JointInstance") or d:IsA("Weld") then
+			pcall(function() d:Destroy() end)
 		end
 	end
 end
 
---============ REAL KILL AURA (hypolX/radix pattern) ============
+killbox.Touched:Connect(function(hit)
+	local model = hit and hit.Parent
+	if not model then return end
+	if Players:GetPlayerFromCharacter(model) then return end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if hum then nukeHumanoid(hum) end
+end)
+
 local kaAccum = 0
 local function npcAuraTick()
 	local char = getChar()
@@ -142,8 +132,8 @@ local function npcAuraTick()
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local rootPos = root.Position
-	local tool = equipAnyTool()
-	local equipped = char:FindFirstChildOfClass("Tool")
+	-- follow the player
+	killbox.CFrame = CFrame.new(rootPos)
 
 	for i = 1, #cache.models do
 		local t = cache.models[i]
@@ -153,69 +143,74 @@ local function npcAuraTick()
 			local inRange = (isPlayer and state.killAuraPlayer and d <= state.auraRangePlayer)
 				or (not isPlayer and state.killAuraNPC and d <= state.auraRangeNPC)
 			if inRange then
-				-- 1) TELEPORT inside reach (essential — server hitbox must overlap)
-				if d > 4 then
-					pcall(function()
-						local look = (t.hrp.Position - rootPos).Unit
-						root.CFrame = CFrame.new(t.hrp.Position - look * 3.5)
-					end)
-				end
-				-- 2) firetouchinterest (physics-level contact)
+				-- 1) THE KILLBOX MOVE: fire touch both ways
 				pcall(function()
-					firetouchinterest(root, t.hrp, 0)
-					firetouchinterest(root, t.hrp, 1)
+					firetouchinterest(killbox, t.hrp, 0)
+					firetouchinterest(killbox, t.hrp, 1)
 				end)
-				-- 3) spam tool Activate — server's tool damage script fires
-				if equipped then
-					pcall(function() equipped:Activate() end)
-					pcall(function() equipped:Activate() end)
+				-- 2) DIRECT nuke (works on NPCs — they accept client health writes)
+				if not isPlayer then
+					nukeHumanoid(t.hum)
+					pcall(function() breakJoints(t.model) end)
+				else
+					-- players: try damage remotes
+					for _, r in ipairs(t.model:GetDescendants()) do
+						if r:IsA("RemoteEvent") then
+							local n = string.lower(r.Name)
+							if n:find("damage") or n:find("hit") or n:find("take") then
+								pcall(function() r:FireServer(9999, t.hrp) end)
+								pcall(function() r:FireServer(9999) end)
+							end
+						end
+					end
 				end
-				-- 4) hunt remotes
-				huntDamageRemotes(t)
-				-- 5) last-ditch raw write (works on weaker games / NPC clones)
-				pcall(function() t.hum:TakeDamage(9999) end)
-				pcall(function()
-					if t.hum.Health > 0 then t.hum.Health = 0 end
-				end)
 			end
 		end
 	end
 end
 RunService.Heartbeat:Connect(function(dt)
-	if not (state.killAuraPlayer or state.killAuraNPC) then return end
+	if not (state.killAuraPlayer or state.killAuraNPC) then
+		killbox.CFrame = CFrame.new(0, -100, 0)
+		return
+	end
 	kaAccum += dt
-	if kaAccum < 0.06 then return end
+	if kaAccum < 0.05 then return end
 	kaAccum = 0
 	refreshCache()
 	npcAuraTick()
 end)
 
---============ DISGUISED AURA (reach + spam swing) ============
+--============ DISGUISED AURA ============
 local discAccum = 0
 local savedReach = nil
 local function disguisedTick()
 	local char = getChar()
 	if not char then return end
-	local tool = equipAnyTool()
+	local tool = char:FindFirstChildOfClass("Tool")
+	if not tool then
+		local bp = LocalPlayer:FindFirstChild("Backpack")
+		if bp then
+			for _, t in ipairs(bp:GetChildren()) do
+				if t:IsA("Tool") then pcall(function() t.Parent = char end); break end
+			end
+		end
+		tool = char:FindFirstChildOfClass("Tool")
+	end
 	if not tool then return end
 	local blade = tool:FindFirstChild("Blade") or tool:FindFirstChild("Handle")
 	if blade and blade:IsA("BasePart") then
-		if not savedReach then
-			savedReach = { size = blade.Size }
-		end
+		if not savedReach then savedReach = { size = blade.Size } end
 		blade.Size = Vector3.new(state.disguiseRange, state.disguiseRange, state.disguiseRange)
 		blade.CanTouch = true
 	end
 	pcall(function() tool:Activate() end)
-	refreshCache()
 	local root = getRoot()
 	if not root then return end
 	local rp = root.Position
 	for i = 1, #cache.models do
 		local t = cache.models[i]
 		if t.hum.Health > 0 and t.hrp then
-			local d = (t.hrp.Position - rp).Magnitude
-			if d <= state.disguiseRange then
+			if (t.hrp.Position - rp).Magnitude <= state.disguiseRange then
 				pcall(function()
 					firetouchinterest(root, t.hrp, 0)
 					firetouchinterest(root, t.hrp, 1)
@@ -255,16 +250,13 @@ local function freezeTick()
 	for i = 1, #cache.models do
 		local t = cache.models[i]
 		if t.hum.Health > 0 and t.hrp and not Players:GetPlayerFromCharacter(t.model) then
-			local d = (t.hrp.Position - rp).Magnitude
-			if d <= state.freezeRange then
+			if (t.hrp.Position - rp).Magnitude <= state.freezeRange then
 				if not frozen[t.hum] then
-					frozen[t.hum] = { ws = t.hum.WalkSpeed, root = t.hrp }
+					frozen[t.hum] = { ws = t.hum.WalkSpeed }
 					pcall(function() t.hum.WalkSpeed = 0 end)
 					pcall(function()
 						local att = t.hrp:FindFirstChildOfClass("Attachment")
-						if not att then
-							att = Instance.new("Attachment"); att.Parent = t.hrp
-						end
+						if not att then att = Instance.new("Attachment"); att.Parent = t.hrp end
 						local apos = Instance.new("AlignPosition")
 						apos.Mode = Enum.PositionAlignmentMode.OneAttachment
 						apos.Attachment0 = att
@@ -280,13 +272,6 @@ local function freezeTick()
 						frozen[t.hum].apos = apos
 						frozen[t.hum].aori = aori
 					end)
-					pcall(function()
-						local vel = Instance.new("BodyVelocity")
-						vel.MaxForce = Vector3.new(1e5,1e5,1e5)
-						vel.Velocity = Vector3.zero
-						vel.Parent = t.hrp
-						frozen[t.hum].bv = vel
-					end)
 				end
 			else
 				local f = frozen[t.hum]
@@ -294,23 +279,20 @@ local function freezeTick()
 					pcall(function() t.hum.WalkSpeed = f.ws end)
 					if f.apos then f.apos:Destroy() end
 					if f.aori then f.aori:Destroy() end
-					if f.bv then f.bv:Destroy() end
 					frozen[t.hum] = nil
 				end
 			end
 		end
 	end
 end
-RunService.Heartbeat:Connect(function(dt)
-	if not state.npcFreeze then return end
-	freezeTick()
+RunService.Heartbeat:Connect(function()
+	if state.npcFreeze then freezeTick() end
 end)
 local function unfreezeAll()
 	for hum, f in pairs(frozen) do
 		pcall(function() if hum.Parent then hum.WalkSpeed = f.ws end end)
 		if f.apos then f.apos:Destroy() end
 		if f.aori then f.aori:Destroy() end
-		if f.bv then f.bv:Destroy() end
 	end
 	frozen = setmetatable({}, { __mode = "k" })
 end
@@ -325,8 +307,6 @@ local function applyJump()
 			hum.UseJumpPower = true
 			hum.JumpPower = state.jumpPower
 		end)
-	else
-		pcall(function() hum.JumpPower = 50 end)
 	end
 end
 local function applySpeed()
@@ -343,12 +323,10 @@ local function applyInvis()
 	for _, p in ipairs(char:GetDescendants()) do
 		if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
 			pcall(function() p.LocalTransparencyModifier = state.invisible and 1 or 0 end)
-			pcall(function() p.Transparency = state.invisible and 1 or p.Transparency end)
 		elseif p:IsA("Decal") or p:IsA("Texture") then
 			pcall(function() p.Transparency = state.invisible and 1 or 0 end)
 		end
 	end
-	-- hide accessories
 	for _, acc in ipairs(char:GetChildren()) do
 		if acc:IsA("Accessory") then
 			local h = acc:FindFirstChild("Handle")
@@ -357,9 +335,8 @@ local function applyInvis()
 	end
 end
 RunService.Heartbeat:Connect(function()
-	if state.jumpBoost or state.speedBoost then
-		applyJump(); applySpeed()
-	end
+	if state.jumpBoost then applyJump() end
+	if state.speedBoost then applySpeed() end
 end)
 RunService.Stepped:Connect(function()
 	if state.invisible then applyInvis() end
@@ -475,7 +452,6 @@ local function fireItem(item)
 	end
 end
 
---============ PRIORITY ============
 local function itemPriority(name)
 	local lower = string.lower(name)
 	for i = 1, #state.keywords do
@@ -493,7 +469,6 @@ local function itemPriority(name)
 	return best
 end
 
---============ AUTO COLLECT ============
 local acAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.autoCollect then return end
@@ -527,7 +502,6 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
---============ TOUCH COLLECT ============
 local tcAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.touchCollect then return end
@@ -549,7 +523,6 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
---============ PULL ITEMS ============
 local function pullItems()
 	refreshItems()
 	local root = getRoot()
@@ -616,9 +589,7 @@ local function syncESP()
 		for _, plr in ipairs(Players:GetPlayers()) do
 			if plr ~= LocalPlayer and plr.Character then
 				local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
-				if hrp then
-					add(hrp, plr.Name, Color3.fromRGB(255, 60, 60), "player", ESP_PRI.player)
-				end
+				if hrp then add(hrp, plr.Name, Color3.fromRGB(255, 60, 60), "player", ESP_PRI.player) end
 			end
 		end
 	end
@@ -640,9 +611,7 @@ local function syncESP()
 					local full = pname .. " " .. ((inst.ObjectText) or "")
 					if string.find(string.lower(full), "chest", 1, true) then
 						local part = getPart(parent)
-						if part then
-							add(part, pname, Color3.fromRGB(255, 215, 0), "chest", ESP_PRI.chest)
-						end
+						if part then add(part, pname, Color3.fromRGB(255, 215, 0), "chest", ESP_PRI.chest) end
 					end
 				end
 			end
@@ -658,17 +627,12 @@ local function syncESP()
 	if state.esp.custom and #state.esp.customKeywords > 0 then
 		for _, inst in pairs(workspace:GetDescendants()) do
 			local parent
-			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
-				parent = inst.Parent
-			elseif inst:IsA("Model") then
-				parent = inst
-			end
+			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then parent = inst.Parent
+			elseif inst:IsA("Model") then parent = inst end
 			if parent and parent.Name and parent.Name ~= "" then
 				if matchesKeyword(parent.Name, state.esp.customKeywords) then
 					local part = getPart(parent)
-					if part then
-						add(part, parent.Name, Color3.fromRGB(180, 100, 255), "custom", ESP_PRI.custom)
-					end
+					if part then add(part, parent.Name, Color3.fromRGB(180, 100, 255), "custom", ESP_PRI.custom) end
 				end
 			end
 		end
@@ -713,8 +677,7 @@ local function makeUI()
 	panel.BackgroundTransparency = 0.05
 	panel.BorderSizePixel = 0
 	panel.Active = true; panel.Draggable = true; panel.Parent = gui
-	local pc = Instance.new("UICorner")
-	pc.CornerRadius = UDim.new(0, 12); pc.Parent = panel
+	local pc = Instance.new("UICorner"); pc.CornerRadius = UDim.new(0, 12); pc.Parent = panel
 	local ps = Instance.new("UIStroke")
 	ps.Color = Color3.fromRGB(255, 60, 120); ps.Thickness = 1.5
 	ps.Transparency = 0.2; ps.Parent = panel
@@ -727,7 +690,7 @@ local function makeUI()
 	title.Position = UDim2.new(0, 12, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v8.0.0"
+	title.Text = "olltaterfx v8.1.0"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
 	title.TextSize = 14
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -741,16 +704,14 @@ local function makeUI()
 	minusBtn.Font = Enum.Font.GothamBold; minusBtn.TextSize = 18
 	minusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 	minusBtn.BorderSizePixel = 0; minusBtn.Parent = header
-	local mc = Instance.new("UICorner")
-	mc.CornerRadius = UDim.new(1, 0); mc.Parent = minusBtn
+	local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(1, 0); mc.Parent = minusBtn
 
 	local tabBar = Instance.new("Frame")
 	tabBar.Size = UDim2.new(1, -12, 0, 30)
 	tabBar.Position = UDim2.new(0, 6, 0, 34)
 	tabBar.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
 	tabBar.BorderSizePixel = 0; tabBar.Parent = panel
-	local tbc = Instance.new("UICorner")
-	tbc.CornerRadius = UDim.new(0, 8); tbc.Parent = tabBar
+	local tbc = Instance.new("UICorner"); tbc.CornerRadius = UDim.new(0, 8); tbc.Parent = tabBar
 	local tabLayout = Instance.new("UIListLayout")
 	tabLayout.FillDirection = Enum.FillDirection.Horizontal
 	tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -763,10 +724,8 @@ local function makeUI()
 
 	local tabs = {}
 	local tabDefs = {
-		{ name = "AUTO", label = "AUTO" },
-		{ name = "FIGHT", label = "FIGHT" },
-		{ name = "MOVE", label = "MOVE" },
-		{ name = "ESP", label = "ESP" },
+		{ name = "AUTO", label = "AUTO" }, { name = "FIGHT", label = "FIGHT" },
+		{ name = "MOVE", label = "MOVE" }, { name = "ESP", label = "ESP" },
 	}
 	local function setActiveTab(name)
 		for n, t in pairs(tabs) do
@@ -785,8 +744,7 @@ local function makeUI()
 		btn.TextColor3 = Color3.fromRGB(180, 180, 190)
 		btn.BorderSizePixel = 0; btn.AutoButtonColor = false
 		btn.Parent = tabBar
-		local bc = Instance.new("UICorner")
-		bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
+		local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
 		local scroll = Instance.new("ScrollingFrame")
 		scroll.Size = UDim2.new(1, 0, 1, 0)
 		scroll.BackgroundTransparency = 1
@@ -807,10 +765,8 @@ local function makeUI()
 			h.Position = UDim2.new(0, 0, 0, y)
 			h.BackgroundTransparency = 1
 			h.Font = Enum.Font.GothamBold
-			h.Text = text
-			h.TextColor3 = Color3.fromRGB(255, 120, 170)
-			h.TextSize = 11
-			h.TextXAlignment = Enum.TextXAlignment.Left
+			h.Text = text; h.TextColor3 = Color3.fromRGB(255, 120, 170)
+			h.TextSize = 11; h.TextXAlignment = Enum.TextXAlignment.Left
 			h.Parent = scroll; y += 22
 		end
 		function b.addToggle(label, getter, setter)
@@ -819,32 +775,24 @@ local function makeUI()
 			row.Position = UDim2.new(0, 0, 0, y)
 			row.BackgroundTransparency = 1; row.Parent = scroll
 			local txt = Instance.new("TextLabel")
-			txt.Size = UDim2.new(1, -70, 1, 0)
-			txt.BackgroundTransparency = 1
-			txt.Font = Enum.Font.Gotham
-			txt.Text = label
+			txt.Size = UDim2.new(1, -70, 1, 0); txt.BackgroundTransparency = 1
+			txt.Font = Enum.Font.Gotham; txt.Text = label
 			txt.TextColor3 = Color3.fromRGB(230, 230, 230)
-			txt.TextSize = 13
-			txt.TextXAlignment = Enum.TextXAlignment.Left
-			txt.Parent = row
+			txt.TextSize = 13; txt.TextXAlignment = Enum.TextXAlignment.Left; txt.Parent = row
 			local pill = Instance.new("Frame")
 			pill.Size = UDim2.new(0, 48, 0, 26)
 			pill.Position = UDim2.new(1, -48, 0.5, -13)
 			pill.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
 			pill.BorderSizePixel = 0; pill.Parent = row
-			local pcc = Instance.new("UICorner")
-			pcc.CornerRadius = UDim.new(1, 0); pcc.Parent = pill
+			local pcc = Instance.new("UICorner"); pcc.CornerRadius = UDim.new(1, 0); pcc.Parent = pill
 			local knob = Instance.new("Frame")
 			knob.Size = UDim2.new(0, 20, 0, 20)
 			knob.Position = UDim2.new(0, 3, 0.5, -10)
 			knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			knob.BorderSizePixel = 0; knob.Parent = pill
-			local kc = Instance.new("UICorner")
-			kc.CornerRadius = UDim.new(1, 0); kc.Parent = knob
+			local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(1, 0); kc.Parent = knob
 			local btn = Instance.new("TextButton")
-			btn.Size = UDim2.new(1, 0, 1, 0)
-			btn.BackgroundTransparency = 1
-			btn.Text = ""; btn.Parent = row
+			btn.Size = UDim2.new(1, 0, 1, 0); btn.BackgroundTransparency = 1; btn.Text = ""; btn.Parent = row
 			local function render()
 				local on = getter()
 				pill.BackgroundColor3 = on and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(40, 40, 48)
@@ -863,32 +811,26 @@ local function makeUI()
 				return tostring(math.floor(v))
 			end
 			local lab = Instance.new("TextLabel")
-			lab.Size = UDim2.new(1, 0, 0, 16)
-			lab.BackgroundTransparency = 1
+			lab.Size = UDim2.new(1, 0, 0, 16); lab.BackgroundTransparency = 1
 			lab.Font = Enum.Font.Gotham
 			lab.Text = label .. ": " .. fmt(getter())
 			lab.TextColor3 = Color3.fromRGB(200, 200, 200)
-			lab.TextSize = 11
-			lab.TextXAlignment = Enum.TextXAlignment.Left
-			lab.Parent = frame
+			lab.TextSize = 11; lab.TextXAlignment = Enum.TextXAlignment.Left; lab.Parent = frame
 			local bg = Instance.new("Frame")
 			bg.Size = UDim2.new(1, 0, 0, 10)
 			bg.Position = UDim2.new(0, 0, 0, 28)
 			bg.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
 			bg.BorderSizePixel = 0; bg.Parent = frame
-			local bgc = Instance.new("UICorner")
-			bgc.CornerRadius = UDim.new(1, 0); bgc.Parent = bg
+			local bgc = Instance.new("UICorner"); bgc.CornerRadius = UDim.new(1, 0); bgc.Parent = bg
 			local fill = Instance.new("Frame")
 			fill.Size = UDim2.new((getter() - minV) / (maxV - minV), 0, 1, 0)
 			fill.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
 			fill.BorderSizePixel = 0; fill.Parent = bg
-			local fc = Instance.new("UICorner")
-			fc.CornerRadius = UDim.new(1, 0); fc.Parent = fill
+			local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(1, 0); fc.Parent = fill
 			local hit = Instance.new("TextButton")
 			hit.Size = UDim2.new(1, 0, 3, 0)
 			hit.Position = UDim2.new(0, 0, -1, 0)
-			hit.BackgroundTransparency = 1
-			hit.Text = ""; hit.Parent = bg
+			hit.BackgroundTransparency = 1; hit.Text = ""; hit.Parent = bg
 			local function setFromX(x)
 				local rel = math.clamp(x / bg.AbsoluteSize.X, 0, 1)
 				local v = minV + rel * (maxV - minV)
@@ -918,21 +860,17 @@ local function makeUI()
 			frame.Position = UDim2.new(0, 0, 0, y)
 			frame.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
 			frame.BorderSizePixel = 0; frame.Parent = scroll
-			local fc = Instance.new("UICorner")
-			fc.CornerRadius = UDim.new(0, 8); fc.Parent = frame
+			local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0, 8); fc.Parent = frame
 			local box = Instance.new("TextBox")
 			box.Size = UDim2.new(1, -12, 1, 0)
 			box.Position = UDim2.new(0, 6, 0, 0)
 			box.BackgroundTransparency = 1
-			box.Font = Enum.Font.Gotham
-			box.Text = getter()
+			box.Font = Enum.Font.Gotham; box.Text = getter()
 			box.PlaceholderText = label
 			box.TextColor3 = Color3.fromRGB(230, 230, 230)
 			box.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
-			box.TextSize = 12
-			box.TextXAlignment = Enum.TextXAlignment.Left
-			box.ClearTextOnFocus = false
-			box.Parent = frame
+			box.TextSize = 12; box.TextXAlignment = Enum.TextXAlignment.Left
+			box.ClearTextOnFocus = false; box.Parent = frame
 			box.FocusLost:Connect(function() setter(box.Text) end)
 			y += 42
 		end
@@ -941,25 +879,21 @@ local function makeUI()
 			btn.Size = UDim2.new(1, 0, 0, 36)
 			btn.Position = UDim2.new(0, 0, 0, y)
 			btn.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
-			btn.Text = label
-			btn.Font = Enum.Font.GothamBold; btn.TextSize = 12
+			btn.Text = label; btn.Font = Enum.Font.GothamBold; btn.TextSize = 12
 			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
 			btn.BorderSizePixel = 0; btn.Parent = scroll
-			local bc = Instance.new("UICorner")
-			bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
+			local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
 			btn.MouseButton1Click:Connect(function()
 				btn.Text = "· · ·"; task.wait(0.15)
 				callback(); btn.Text = label
 			end)
 			y += 42
 		end
-		function b.finish()
-			scroll.CanvasSize = UDim2.new(0, 0, 0, y + 10)
-		end
+		function b.finish() scroll.CanvasSize = UDim2.new(0, 0, 0, y + 10) end
 		return b
 	end
 
-	-- ===== AUTO =====
+	-- AUTO
 	do
 		local b = buildersFor(tabs.AUTO.scroll)
 		b.addHeader("AUTO COLLECT")
@@ -984,8 +918,7 @@ local function makeUI()
 			fb.Font = Enum.Font.GothamBold; fb.TextSize = 12
 			fb.TextColor3 = Color3.fromRGB(255, 255, 255)
 			fb.Parent = panel
-			local fbc = Instance.new("UICorner")
-			fbc.CornerRadius = UDim.new(0, 6); fbc.Parent = fb
+			local fbc = Instance.new("UICorner"); fbc.CornerRadius = UDim.new(0, 6); fbc.Parent = fb
 			task.wait(1.2); fb:Destroy()
 		end)
 		b.addTextBox("chest,fragment,orb,heart,...",
@@ -998,10 +931,10 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== FIGHT =====
+	-- FIGHT
 	do
 		local b = buildersFor(tabs.FIGHT.scroll)
-		b.addHeader("KILL AURA — REAL (tool-activate)")
+		b.addHeader("KILL AURA — KILLBOX (Touched)")
 		b.addToggle("Player", function() return state.killAuraPlayer end,
 			function(v) state.killAuraPlayer = v end)
 		b.addSlider("Player Range", 5, 300, function() return state.auraRangePlayer end,
@@ -1019,21 +952,21 @@ local function makeUI()
 			function(v) state.spamRate = v end, true)
 		b.addHeader("NPC FREEZE")
 		b.addToggle("Freeze NPC", function() return state.npcFreeze end,
-			function(v)
-				state.npcFreeze = v
-				if not v then unfreezeAll() end
-			end)
+			function(v) state.npcFreeze = v; if not v then unfreezeAll() end end)
 		b.addSlider("Freeze Range", 20, 1000, function() return state.freezeRange end,
 			function(v) state.freezeRange = v end)
 		b.finish()
 	end
 
-	-- ===== MOVE =====
+	-- MOVE
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
 		b.addHeader("SPEED BOOST")
 		b.addToggle("Speed Boost", function() return state.speedBoost end,
-			function(v) state.speedBoost = v; if not v then applySpeed() end end)
+			function(v) state.speedBoost = v; if not v then
+				local h = getChar() and getChar():FindFirstChildOfClass("Humanoid")
+				if h then h.WalkSpeed = 16 end
+			end end)
 		b.addSlider("Walk Speed", 16, 500, function() return state.speedValue end,
 			function(v) state.speedValue = v end)
 		b.addHeader("JUMP BOOST")
@@ -1046,8 +979,7 @@ local function makeUI()
 			function(v) state.invisible = v; applyInvis() end)
 		b.addHeader("FLY")
 		b.addToggle("Fly", function() return state.fly end, function(v)
-			state.fly = v
-			if v then startFly() else stopFly() end
+			state.fly = v; if v then startFly() else stopFly() end
 		end)
 		b.addSlider("Fly Speed", 20, 400, function() return state.flySpeed end,
 			function(v) state.flySpeed = v end)
@@ -1057,7 +989,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== ESP =====
+	-- ESP
 	do
 		local b = buildersFor(tabs.ESP.scroll)
 		b.addHeader("ESP")
@@ -1084,31 +1016,24 @@ local function makeUI()
 
 	setActiveTab("AUTO")
 
-	-- bubble
 	local bubble = Instance.new("TextButton")
 	bubble.Size = UDim2.new(0, 52, 0, 52)
 	bubble.Position = panel.Position
 	bubble.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
-	bubble.Text = "oll"
-	bubble.Font = Enum.Font.GothamBold; bubble.TextSize = 14
+	bubble.Text = "oll"; bubble.Font = Enum.Font.GothamBold; bubble.TextSize = 14
 	bubble.TextColor3 = Color3.fromRGB(255, 255, 255)
 	bubble.BorderSizePixel = 0
 	bubble.Visible = false; bubble.Parent = gui
-	local bc2 = Instance.new("UICorner")
-	bc2.CornerRadius = UDim.new(1, 0); bc2.Parent = bubble
+	local bc2 = Instance.new("UICorner"); bc2.CornerRadius = UDim.new(1, 0); bc2.Parent = bubble
 
 	minusBtn.MouseButton1Click:Connect(function()
-		panel.Visible = false
-		bubble.Position = panel.Position
-		bubble.Visible = true
+		panel.Visible = false; bubble.Position = panel.Position; bubble.Visible = true
 	end)
 	local dragStart, startPos, moved
 	bubble.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or
 			input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragStart = input.Position
-			startPos = bubble.Position
-			moved = false
+			dragStart = input.Position; startPos = bubble.Position; moved = false
 		end
 	end)
 	UserInputService.InputChanged:Connect(function(input)
@@ -1117,8 +1042,7 @@ local function makeUI()
 			input.UserInputType == Enum.UserInputType.MouseMovement then
 			local delta = input.Position - dragStart
 			if delta.Magnitude > 5 then moved = true end
-			bubble.Position = UDim2.new(
-				startPos.X.Scale, startPos.X.Offset + delta.X,
+			bubble.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
 				startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 		end
 	end)
@@ -1127,9 +1051,7 @@ local function makeUI()
 		if input.UserInputType == Enum.UserInputType.Touch or
 			input.UserInputType == Enum.UserInputType.MouseButton1 then
 			if not moved then
-				bubble.Visible = false
-				panel.Position = bubble.Position
-				panel.Visible = true
+				bubble.Visible = false; panel.Position = bubble.Position; panel.Visible = true
 			end
 			dragStart = nil
 		end
@@ -1145,11 +1067,11 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 --============ FINAL SEAL ============
--- sig: olltaterfx|v8|ofx|crisper2019|4d9f2e1b
-local _SEAL = { "olltaterfx", "v8", "ofx", "crisper2019", "4d9f2e1b" }
+-- sig: olltaterfx|v8.1|ofx|crisper2019|4d9f2e1b
+local _SEAL = { "olltaterfx", "v8.1", "ofx", "crisper2019", "4d9f2e1b" }
 local _sig = table.concat(_SEAL, "|")
 local _hash = 0
 for i = 1, #_sig do _hash = (_hash * 31 + string.byte(_sig, i)) % 0xFFFFFFFF end
-if _hash ~= 0x7E4C90A2 then
+if _hash ~= 0xE92A15B7 then
 	warn("[olltaterfx] file signature mismatch — got altered copy?")
 end
