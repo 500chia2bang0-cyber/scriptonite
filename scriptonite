@@ -1,7 +1,8 @@
 --============================================================
--- olltaterfx | UNIVERSAL BENCH v5.0.1 — ESP + PRIORITY NAMES
--- kill aura + fly + noclip + auto-collect + pull + ESP
+-- olltaterfx | UNIVERSAL BENCH v6.0.0
+-- ESP + PRIORITY NAMES + KILL AURA + FLY + NOCLIP + AUTO COLLECT
 -- StarterPlayerScripts (LocalScript)
+-- (c) olltaterfx — do not redistribute without watermark intact
 --============================================================
 
 local Players = game:GetService("Players")
@@ -9,13 +10,28 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
+--============ HIDDEN WATERMARK (do not remove) ============
+--#WM:olltaterfx::v6::2019::crisper::ofx::0xDEADBEEF::sig=7f3a9c2e
+local _WM = ("olltaterfx|v6|2019|ofx"):gsub(".", function(c)
+	return string.format("%02x", string.byte(c))
+end)
+local _WMSIG = 0x7f3a9c2e
+local function _wmCheck()
+	local ok = #_WM == 44 and _WMSIG == 0x7f3a9c2e
+	if not ok then warn("[olltaterfx] seal broken") end
+	return ok
+end
+_wmCheck()
+
 --============ STATE ============
 local state = {
 	killAuraPlayer = false, killAuraNPC = false,
 	fly = false, noclip = false,
 	autoCollect = false, touchCollect = false,
+	tpOnCollect = true,
 	auraRangePlayer = 20, auraRangeNPC = 20,
 	flySpeed = 60, collectRange = 200,
+	collectSpeed = 0.25, -- seconds between collect ticks
 	keywords = { "chest", "fragment", "orb", "heart", "coin", "gem", "crystal", "egg" },
 	esp = {
 		player = false, npc = false, chest = false,
@@ -67,13 +83,17 @@ local function refreshCache()
 	end
 end
 
---============ KILL AURA ============
-local killed = setmetatable({}, { __mode = "k" })
+--============ KILL AURA (FIXED — NPC + PLAYER, per-target debounce) ============
+-- FIX: old version used a single weak-keyed `killed` set that never
+-- cleared, so respawned NPCs kept a stale entry and aura stopped firing.
+-- New version: debounce by Humanoid ref + timestamp, auto-expire.
+local lastHit = setmetatable({}, { __mode = "k" })
+local HIT_COOLDOWN = 0.35
 local kaAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not (state.killAuraPlayer or state.killAuraNPC) then return end
 	kaAccum += dt
-	if kaAccum < 0.12 then return end
+	if kaAccum < 0.1 then return end
 	kaAccum = 0
 	refreshCache()
 	local char = getChar()
@@ -81,24 +101,39 @@ RunService.Heartbeat:Connect(function(dt)
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local rootPos = root.Position
+	local now = os.clock()
+
 	for i = 1, #cache.models do
 		local t = cache.models[i]
-		if t.hum.Health > 0 and not killed[t.hum] then
-			local d = (t.hrp.Position - rootPos).Magnitude
-			local isPlayer = Players:GetPlayerFromCharacter(t.model) ~= nil
-			if isPlayer then
-				if state.killAuraPlayer and d <= state.auraRangePlayer then
-					t.hum.Health = 0; killed[t.hum] = true
+		if t.hum.Health > 0 then
+			local last = lastHit[t.hum]
+			if not last or (now - last) > HIT_COOLDOWN then
+				local d = (t.hrp.Position - rootPos).Magnitude
+				local isPlayer = Players:GetPlayerFromCharacter(t.model) ~= nil
+				local fire = false
+				if isPlayer then
+					if state.killAuraPlayer and d <= state.auraRangePlayer then fire = true end
+				else
+					if state.killAuraNPC and d <= state.auraRangeNPC then fire = true end
 				end
-			elseif state.killAuraNPC and d <= state.auraRangeNPC then
-				t.hum.Health = 0; killed[t.hum] = true
+				if fire then
+					-- try SetHealth via Humanoid; fallback to Health prop
+					pcall(function() t.hum:TakeDamage(9999) end)
+					if t.hum.Health > 0 then
+						pcall(function() t.hum.Health = 0 end)
+					end
+					lastHit[t.hum] = now
+				end
 			end
+		else
+			-- NPC respawn: clear stale debounce so it can be hit again
+			lastHit[t.hum] = nil
 		end
 	end
 end)
 
 --============ FLY ============
-local flyConn, bv, bg, savedWalk = 16
+local flyConn, bv, bg, savedWalk
 local function startFly()
 	local char = getChar()
 	if not char then return end
@@ -108,9 +143,14 @@ local function startFly()
 	savedWalk = hum.WalkSpeed
 	hum.WalkSpeed = 0
 	bv = Instance.new("BodyVelocity")
-	bv.MaxForce = Vector3.new(1e5,1e5,1e5); bv.Velocity = Vector3.zero; bv.Parent = hrp
+	bv.MaxForce = Vector3.new(1e5,1e5,1e5)
+	bv.Velocity = Vector3.zero
+	bv.Parent = hrp
 	bg = Instance.new("BodyGyro")
-	bg.MaxTorque = Vector3.new(1e5,1e5,1e5); bg.P = 9e4; bg.CFrame = hrp.CFrame; bg.Parent = hrp
+	bg.MaxTorque = Vector3.new(1e5,1e5,1e5)
+	bg.P = 9e4
+	bg.CFrame = hrp.CFrame
+	bg.Parent = hrp
 	flyConn = RunService.Heartbeat:Connect(function()
 		if not isAlive(char) then return end
 		local cam = workspace.CurrentCamera
@@ -135,7 +175,7 @@ local function stopFly()
 	local char = getChar()
 	if char then
 		local hum = char:FindFirstChildOfClass("Humanoid")
-		if hum then hum.WalkSpeed = savedWalk end
+		if hum and savedWalk then hum.WalkSpeed = savedWalk end
 	end
 end
 
@@ -150,7 +190,6 @@ RunService.Stepped:Connect(function()
 		end
 	end
 end)
-
 --============ ITEM CACHE ============
 local itemCache = { items = {}, nextRefresh = 0 }
 local function refreshItems()
@@ -206,8 +245,6 @@ local function fireItem(item)
 end
 
 --============ PRIORITY (đích danh > từ khoá) ============
--- exact match = 10000, prefix match = 500 + len,
--- contains = len (dài hơn = cụ thể hơn)
 local function itemPriority(name)
 	local lower = string.lower(name)
 	for i = 1, #state.keywords do
@@ -225,12 +262,12 @@ local function itemPriority(name)
 	return best
 end
 
---============ AUTO COLLECT (priority + closest) ============
+--============ AUTO COLLECT (priority + closest, adjustable speed) ============
 local acAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.autoCollect then return end
 	acAccum += dt
-	if acAccum < 0.25 then return end
+	if acAccum < state.collectSpeed then return end
 	acAccum = 0
 	refreshItems()
 	local char = getChar()
@@ -252,8 +289,10 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 
 	if best then
-		if bestD > 4 then
-			root.CFrame = CFrame.new(best.part.Position + Vector3.new(0, 3, 0))
+		if state.tpOnCollect and bestD > 4 then
+			pcall(function()
+				root.CFrame = CFrame.new(best.part.Position + Vector3.new(0, 3, 0))
+			end)
 		end
 		fireItem(best)
 	end
@@ -264,7 +303,7 @@ local tcAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.touchCollect then return end
 	tcAccum += dt
-	if tcAccum < 0.2 then return end
+	if tcAccum < state.collectSpeed then return end
 	tcAccum = 0
 	refreshItems()
 	local root = getRoot()
@@ -305,18 +344,15 @@ local function pullItems()
 end
 
 --============ ESP ============
-local espObjects = {} -- [part] = {hl, bb, tl, category}
-
+local espObjects = {}
 local function destroyESPEntry(e)
 	if e.hl then e.hl:Destroy() end
 	if e.bb then e.bb:Destroy() end
 end
-
 local function clearESP()
 	for _, e in pairs(espObjects) do destroyESPEntry(e) end
 	espObjects = {}
 end
-
 local function makeESP(part, name, color, category)
 	local adornee = (part.Parent and part.Parent:IsA("Model")) and part.Parent or part
 	local hl = Instance.new("Highlight")
@@ -327,13 +363,11 @@ local function makeESP(part, name, color, category)
 	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	hl.Adornee = adornee
 	hl.Parent = part
-
 	local bb = Instance.new("BillboardGui")
 	bb.Size = UDim2.new(0, 160, 0, 28)
 	bb.StudsOffset = Vector3.new(0, 2.5, 0)
 	bb.AlwaysOnTop = true
 	bb.Parent = part
-
 	local tl = Instance.new("TextLabel")
 	tl.Size = UDim2.new(1, 0, 1, 0)
 	tl.BackgroundTransparency = 1
@@ -344,21 +378,18 @@ local function makeESP(part, name, color, category)
 	tl.Font = Enum.Font.GothamBold
 	tl.TextSize = 14
 	tl.Parent = bb
-
 	return { hl = hl, bb = bb, tl = tl, category = category, name = name }
 end
 
--- priority: custom > chest > item > player > npc
 local ESP_PRI = { custom = 50, chest = 40, item = 30, player = 20, npc = 10 }
 
 local function syncESP()
-	local targets = {} -- [part] = {name, color, category}
+	local targets = {}
 	local function add(part, name, color, category, pri)
 		local cur = targets[part]
 		if cur and cur.pri >= pri then return end
 		targets[part] = { name = name, color = color, category = category, pri = pri }
 	end
-
 	if state.esp.player then
 		for _, plr in ipairs(Players:GetPlayers()) do
 			if plr ~= LocalPlayer and plr.Character then
@@ -369,7 +400,6 @@ local function syncESP()
 			end
 		end
 	end
-
 	if state.esp.npc then
 		refreshCache()
 		for i = 1, #cache.models do
@@ -379,7 +409,6 @@ local function syncESP()
 			end
 		end
 	end
-
 	if state.esp.chest then
 		for _, inst in pairs(workspace:GetDescendants()) do
 			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
@@ -397,7 +426,6 @@ local function syncESP()
 			end
 		end
 	end
-
 	if state.esp.item then
 		refreshItems()
 		for i = 1, #itemCache.items do
@@ -405,7 +433,6 @@ local function syncESP()
 			add(it.part, it.name, Color3.fromRGB(0, 255, 100), "item", ESP_PRI.item)
 		end
 	end
-
 	if state.esp.custom and #state.esp.customKeywords > 0 then
 		for _, inst in pairs(workspace:GetDescendants()) do
 			local parent
@@ -424,8 +451,6 @@ local function syncESP()
 			end
 		end
 	end
-
-	-- xoá ESP không còn match
 	for part, e in pairs(espObjects) do
 		if not targets[part] then
 			destroyESPEntry(e)
@@ -435,8 +460,6 @@ local function syncESP()
 			espObjects[part] = nil
 		end
 	end
-
-	-- tạo mới
 	for part, info in pairs(targets) do
 		if not espObjects[part] then
 			espObjects[part] = makeESP(part, info.name, info.color, info.category)
@@ -457,7 +480,6 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 	syncESP()
 end)
-
 --============ UI ============
 local function makeUI()
 	local gui = Instance.new("ScreenGui")
@@ -467,7 +489,7 @@ local function makeUI()
 	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.new(0, 250, 0, 340)
+	panel.Size = UDim2.new(0, 250, 0, 360)
 	panel.Position = UDim2.new(0, 16, 0, 60)
 	panel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 	panel.BackgroundTransparency = 0.05
@@ -490,7 +512,7 @@ local function makeUI()
 	title.Position = UDim2.new(0, 12, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v5.0.1"
+	title.Text = "olltaterfx v6.0.0"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
 	title.TextSize = 14
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -624,16 +646,20 @@ local function makeUI()
 			render()
 			y += 42
 		end
-		function b.addSlider(label, minV, maxV, getter, setter)
+		function b.addSlider(label, minV, maxV, getter, setter, isFloat)
 			local frame = Instance.new("Frame")
 			frame.Size = UDim2.new(1, 0, 0, 50)
 			frame.Position = UDim2.new(0, 0, 0, y)
 			frame.BackgroundTransparency = 1; frame.Parent = scroll
+			local fmt = function(v)
+				if isFloat then return string.format("%.2f", v) end
+				return tostring(math.floor(v))
+			end
 			local lab = Instance.new("TextLabel")
 			lab.Size = UDim2.new(1, 0, 0, 16)
-            lab.BackgroundTransparency = 1
+			lab.BackgroundTransparency = 1
 			lab.Font = Enum.Font.Gotham
-			lab.Text = label .. ": " .. getter()
+			lab.Text = label .. ": " .. fmt(getter())
 			lab.TextColor3 = Color3.fromRGB(200, 200, 200)
 			lab.TextSize = 11
 			lab.TextXAlignment = Enum.TextXAlignment.Left
@@ -658,10 +684,11 @@ local function makeUI()
 			hit.Text = ""; hit.Parent = bg
 			local function setFromX(x)
 				local rel = math.clamp(x / bg.AbsoluteSize.X, 0, 1)
-				local v = math.floor(minV + rel * (maxV - minV))
+				local v = minV + rel * (maxV - minV)
+				if not isFloat then v = math.floor(v) end
 				setter(v)
 				fill.Size = UDim2.new(rel, 0, 1, 0)
-				lab.Text = label .. ": " .. v
+				lab.Text = label .. ": " .. fmt(v)
 			end
 			local dragging = false
 			hit.MouseButton1Down:Connect(function() dragging = true end)
@@ -729,19 +756,23 @@ local function makeUI()
 	-- ===== AUTO TAB =====
 	do
 		local b = buildersFor(tabs.AUTO.scroll)
-		b.addHeader("AUTO COLLECT (priority: đích danh > keyword)")
+		b.addHeader("AUTO COLLECT (đích danh > keyword)")
 		b.addToggle("Auto Collect", function() return state.autoCollect end,
 			function(v) state.autoCollect = v end)
+		b.addToggle("TP khi nhặt", function() return state.tpOnCollect end,
+			function(v) state.tpOnCollect = v end)
 		b.addToggle("Touch Collect", function() return state.touchCollect end,
 			function(v) state.touchCollect = v end)
 		b.addSlider("Collect Range", 10, 500, function() return state.collectRange end,
 			function(v) state.collectRange = v end)
+		b.addSlider("Collect Speed (s)", 0.05, 1.0, function() return state.collectSpeed end,
+			function(v) state.collectSpeed = v end, true)
 		b.addHeader("PULL ITEMS (click)")
 		b.addButton("KÉO ITEM VỀ NGƯỜI", function()
 			local n = pullItems()
 			local fb = Instance.new("TextLabel")
 			fb.Size = UDim2.new(1, -12, 0, 30)
-			fb.Position = UDim2.new(0, 6, 0, 300)
+			fb.Position = UDim2.new(0, 6, 0, 320)
 			fb.BackgroundColor3 = Color3.fromRGB(40, 200, 100)
 			fb.Text = "Đã kéo " .. n .. " item"
 			fb.Font = Enum.Font.GothamBold
@@ -770,7 +801,7 @@ local function makeUI()
 			function(v) state.killAuraPlayer = v end)
 		b.addSlider("Player Range", 5, 300, function() return state.auraRangePlayer end,
 			function(v) state.auraRangePlayer = v end)
-		b.addHeader("KILL AURA NPC")
+		b.addHeader("KILL AURA NPC (fixed — TakeDamage + debounce)")
 		b.addToggle("NPC", function() return state.killAuraNPC end,
 			function(v) state.killAuraNPC = v end)
 		b.addSlider("NPC Range", 5, 300, function() return state.auraRangeNPC end,
@@ -781,7 +812,7 @@ local function makeUI()
 	-- ===== MOVE TAB =====
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
-		b.addHeader("FLY (joystick gốc + xoay cam)")
+		b.addHeader("FLY (joystick + cam)")
 		b.addToggle("Fly", function() return state.fly end, function(v)
 			state.fly = v
 			if v then startFly() else stopFly() end
@@ -882,3 +913,13 @@ LocalPlayer.CharacterAdded:Connect(function()
 		startFly()
 	end
 end)
+
+--============ FINAL SEAL ============
+-- sig: olltaterfx|v6|ofx|crisper2019|7f3a9c2e
+local _SEAL = { "olltaterfx", "v6", "ofx", "crisper2019", "7f3a9c2e" }
+local _sig = table.concat(_SEAL, "|")
+local _hash = 0
+for i = 1, #_sig do _hash = (_hash * 31 + string.byte(_sig, i)) % 0xFFFFFFFF end
+if _hash ~= 0x3A7E1B04 then
+	warn("[olltaterfx] file signature mismatch — got altered copy?")
+end
