@@ -1,8 +1,8 @@
 --============================================================
--- olltaterfx | UNIVERSAL BENCH v6.0.1
--- ESP + PRIORITY + KILL AURA (fixed: real hitbox touch)
--- + DISGUISED AURA (reach + spam swing)
--- + NPC FREEZE + FLY + NOCLIP + AUTO COLLECT
+-- olltaterfx | UNIVERSAL BENCH v8.0.0
+-- REAL kill aura (tool-activate, hypolX/radix pattern)
+-- + DISGUISED AURA + NPC FREEZE + JUMP/SPEED/INVIS
+-- + ESP + FLY + NOCLIP + AUTO COLLECT
 -- StarterPlayerScripts (LocalScript)
 -- (c) olltaterfx — watermark intact, do not redistribute stripped
 --============================================================
@@ -13,14 +13,12 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 --============ HIDDEN WATERMARK ============
---#WM:olltaterfx::v7::2019::crisper::ofx::0xC0FFEE11::sig=9b4e1d7a
-local _WM = ("olltaterfx|v7|2019|ofx"):gsub(".", function(c)
+--#WM:olltaterfx::v8::2019::crisper::ofx::0xBADC0DE9::sig=4d9f2e1b
+local _WM = ("olltaterfx|v8|2019|ofx"):gsub(".", function(c)
 	return string.format("%02x", string.byte(c))
 end)
-local _WMSIG = 0xC0FFEE11
-local function _wmCheck()
-	return #_WM == 44 and _WMSIG == 0xC0FFEE11
-end
+local _WMSIG = 0xBADC0DE9
+local function _wmCheck() return #_WM == 44 and _WMSIG == 0xBADC0DE9 end
 _wmCheck()
 
 --============ STATE ============
@@ -30,10 +28,12 @@ local state = {
 	fly = false, noclip = false,
 	autoCollect = false, touchCollect = false, tpOnCollect = true,
 	auraRangePlayer = 20, auraRangeNPC = 20,
-	disguiseRange = 18, -- reach for disguised aura
-	spamRate = 0.08,     -- seconds between swings
+	disguiseRange = 18, spamRate = 0.08,
 	freezeRange = 200,
 	flySpeed = 60, collectRange = 200, collectSpeed = 0.25,
+	jumpBoost = false, jumpPower = 100,
+	speedBoost = false, speedValue = 60,
+	invisible = false,
 	keywords = { "chest", "fragment", "orb", "heart", "coin", "gem", "crystal", "egg" },
 	esp = {
 		player = false, npc = false, chest = false,
@@ -70,7 +70,7 @@ local cache = { models = {}, nextRefresh = 0 }
 local function refreshCache()
 	local now = os.clock()
 	if now < cache.nextRefresh then return end
-	cache.nextRefresh = now + 0.35
+	cache.nextRefresh = now + 0.3
 	cache.models = {}
 	local char = getChar()
 	for _, obj in pairs(workspace:GetChildren()) do
@@ -84,26 +84,67 @@ local function refreshCache()
 	end
 end
 
---============ REAL KILL AURA (touch hitbox — replicates) ============
--- FIX: client-side Health write is rejected by server.
--- Real hit: create a CanTouch hitbox on the target's root,
--- spam firetouchinterest from our root. Server sees a legit
--- physics touch and applies its own damage (weapon / hazard),
--- OR we replicate via the tool's own swing animation.
--- This loop uses both: touch spam + tool:Activate when armed.
+--============ TOOL HELPER (hypolX core) ============
+-- The trick: get ANY weapon tool equipped, teleport inside its
+-- reach, spam Activate. The SERVER runs the tool's own damage
+-- script — that's how the hit actually lands. No Health writes.
+local function equipAnyTool()
+	local char = getChar()
+	if not char then return nil end
+	local tool = char:FindFirstChildOfClass("Tool")
+	if tool then return tool end
+	local backpack = LocalPlayer:FindFirstChild("Backpack")
+	if not backpack then return nil end
+	for _, t in ipairs(backpack:GetChildren()) do
+		if t:IsA("Tool") then
+			pcall(function() t.Parent = char end)
+			return t
+		end
+	end
+	return nil
+end
+
+--============ DAMAGE REMOTE HUNTER ============
+-- Many games expose a remote on the NPC or a shared one that
+-- applies damage server-side. hypolX hunts by name pattern.
+local function huntDamageRemotes(target)
+	local model = target.model
+	local hum = target.hum
+	local hrp = target.hrp
+	-- remotes named like damage/hit/take
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("RemoteEvent") then
+			local n = string.lower(d.Name)
+			if n:find("damage") or n:find("hit") or n:find("take") or n:find("attack") then
+				pcall(function() d:FireServer(9999, hrp) end)
+				pcall(function() d:FireServer(hrp, 9999) end)
+				pcall(function() d:FireServer(9999) end)
+			end
+		end
+	end
+	-- also try a shared remotes folder
+	local rs = game:GetService("ReplicatedStorage")
+	for _, d in ipairs(rs:GetDescendants()) do
+		if d:IsA("RemoteEvent") then
+			local n = string.lower(d.Name)
+			if n:find("damage") or n:find("hit") then
+				pcall(function() d:FireServer(hrp, 9999) end)
+			end
+		end
+	end
+end
+
+--============ REAL KILL AURA (hypolX/radix pattern) ============
 local kaAccum = 0
 local function npcAuraTick()
-	if not (state.killAuraPlayer or state.killAuraNPC) then return end
-	refreshCache()
 	local char = getChar()
 	if not isAlive(char) then return end
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local rootPos = root.Position
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	local equippedTool = char:FindFirstChildOfClass("Tool")
+	local tool = equipAnyTool()
+	local equipped = char:FindFirstChildOfClass("Tool")
 
-	-- the move: touch the target, then Activate the held tool.
 	for i = 1, #cache.models do
 		local t = cache.models[i]
 		if t.hum.Health > 0 and t.hrp then
@@ -112,21 +153,29 @@ local function npcAuraTick()
 			local inRange = (isPlayer and state.killAuraPlayer and d <= state.auraRangePlayer)
 				or (not isPlayer and state.killAuraNPC and d <= state.auraRangeNPC)
 			if inRange then
-				-- 1) teleport a hairtie of touch: firetouchinterest both ways
+				-- 1) TELEPORT inside reach (essential — server hitbox must overlap)
+				if d > 4 then
+					pcall(function()
+						local look = (t.hrp.Position - rootPos).Unit
+						root.CFrame = CFrame.new(t.hrp.Position - look * 3.5)
+					end)
+				end
+				-- 2) firetouchinterest (physics-level contact)
 				pcall(function()
 					firetouchinterest(root, t.hrp, 0)
 					firetouchinterest(root, t.hrp, 1)
 				end)
-				-- 2) if we have a tool, swing it — server-side damage replicates
-				if equippedTool then
-					pcall(function() equippedTool:Activate() end)
+				-- 3) spam tool Activate — server's tool damage script fires
+				if equipped then
+					pcall(function() equipped:Activate() end)
+					pcall(function() equipped:Activate() end)
 				end
-				-- 3) if a SwordModule / damage remote is exposed, poke it
+				-- 4) hunt remotes
+				huntDamageRemotes(t)
+				-- 5) last-ditch raw write (works on weaker games / NPC clones)
+				pcall(function() t.hum:TakeDamage(9999) end)
 				pcall(function()
-					local dmgEvent = t.model:FindFirstChild("DamageEvent")
-					if dmgEvent and dmgEvent:IsA("RemoteEvent") then
-						dmgEvent:FireServer(9999, t.hrp)
-					end
+					if t.hum.Health > 0 then t.hum.Health = 0 end
 				end)
 			end
 		end
@@ -135,36 +184,29 @@ end
 RunService.Heartbeat:Connect(function(dt)
 	if not (state.killAuraPlayer or state.killAuraNPC) then return end
 	kaAccum += dt
-	if kaAccum < 0.08 then return end
+	if kaAccum < 0.06 then return end
 	kaAccum = 0
+	refreshCache()
 	npcAuraTick()
 end)
 
 --============ DISGUISED AURA (reach + spam swing) ============
--- Looks like a legit swing. Hooks the tool's reach on the fly,
--- fires Activate in a fast loop, restores reach when off.
 local discAccum = 0
 local savedReach = nil
 local function disguisedTick()
 	local char = getChar()
 	if not char then return end
-	local tool = char:FindFirstChildOfClass("Tool")
+	local tool = equipAnyTool()
 	if not tool then return end
-
-	-- widen the tool's reach part if it has one (common "Blade"/"Handle" HitBox)
 	local blade = tool:FindFirstChild("Blade") or tool:FindFirstChild("Handle")
 	if blade and blade:IsA("BasePart") then
 		if not savedReach then
-			savedReach = { size = blade.Size, cframe = blade.CFrame }
+			savedReach = { size = blade.Size }
 		end
 		blade.Size = Vector3.new(state.disguiseRange, state.disguiseRange, state.disguiseRange)
 		blade.CanTouch = true
 	end
-
-	-- swing spam
 	pcall(function() tool:Activate() end)
-
-	-- also run touch on any enemy in reach so any physical hitbox triggers
 	refreshCache()
 	local root = getRoot()
 	if not root then return end
@@ -187,9 +229,7 @@ local function restoreDisguise()
 		local char = getChar()
 		local tool = char and char:FindFirstChildOfClass("Tool")
 		local blade = tool and (tool:FindFirstChild("Blade") or tool:FindFirstChild("Handle"))
-		if blade and blade:IsA("BasePart") then
-			blade.Size = savedReach.size
-		end
+		if blade and blade:IsA("BasePart") then blade.Size = savedReach.size end
 		savedReach = nil
 	end
 end
@@ -204,10 +244,7 @@ RunService.Heartbeat:Connect(function(dt)
 	disguisedTick()
 end)
 --============ NPC FREEZE ============
--- Anchors every NPC root in range to a fixed CFrame,
--- kills velocity, sets WalkSpeed = 0, and optionally
--- severs their pathfinding. Toggling off restores walkspeed.
-local frozen = setmetatable({}, { __mode = "k" }) -- [hum] = {walkspeed, root}
+local frozen = setmetatable({}, { __mode = "k" })
 local function freezeTick()
 	if not state.npcFreeze then return end
 	refreshCache()
@@ -223,40 +260,35 @@ local function freezeTick()
 				if not frozen[t.hum] then
 					frozen[t.hum] = { ws = t.hum.WalkSpeed, root = t.hrp }
 					pcall(function() t.hum.WalkSpeed = 0 end)
-					-- anchor via AlignPosition + AlignOrientation
 					pcall(function()
+						local att = t.hrp:FindFirstChildOfClass("Attachment")
+						if not att then
+							att = Instance.new("Attachment"); att.Parent = t.hrp
+						end
 						local apos = Instance.new("AlignPosition")
 						apos.Mode = Enum.PositionAlignmentMode.OneAttachment
-						apos.Attachment0 = t.hrp:FindFirstChildOfClass("Attachment")
-							or (function()
-								local a = Instance.new("Attachment"); a.Parent = t.hrp; return a
-							end)()
+						apos.Attachment0 = att
 						apos.Position = t.hrp.Position
 						apos.MaxForce = math.huge
 						apos.Parent = t.hrp
 						local aori = Instance.new("AlignOrientation")
 						aori.Mode = Enum.OrientationAlignmentMode.OneAttachment
-						aori.Attachment0 = apos.Attachment0
+						aori.Attachment0 = att
 						aori.CFrame = t.hrp.CFrame
 						aori.MaxTorque = math.huge
 						aori.Parent = t.hrp
 						frozen[t.hum].apos = apos
 						frozen[t.hum].aori = aori
 					end)
-					-- also zero current velocity
 					pcall(function()
-						local vel = t.hrp:FindFirstChildOfClass("BodyVelocity")
-						if not vel then
-							vel = Instance.new("BodyVelocity")
-							vel.MaxForce = Vector3.new(1e5,1e5,1e5)
-							vel.Velocity = Vector3.zero
-							vel.Parent = t.hrp
-						end
+						local vel = Instance.new("BodyVelocity")
+						vel.MaxForce = Vector3.new(1e5,1e5,1e5)
+						vel.Velocity = Vector3.zero
+						vel.Parent = t.hrp
 						frozen[t.hum].bv = vel
 					end)
 				end
 			else
-				-- outside range now — unfreeze
 				local f = frozen[t.hum]
 				if f then
 					pcall(function() t.hum.WalkSpeed = f.ws end)
@@ -273,7 +305,6 @@ RunService.Heartbeat:Connect(function(dt)
 	if not state.npcFreeze then return end
 	freezeTick()
 end)
--- clear on toggle-off
 local function unfreezeAll()
 	for hum, f in pairs(frozen) do
 		pcall(function() if hum.Parent then hum.WalkSpeed = f.ws end end)
@@ -283,6 +314,56 @@ local function unfreezeAll()
 	end
 	frozen = setmetatable({}, { __mode = "k" })
 end
+
+--============ JUMP / SPEED / INVISIBLE ============
+local function applyJump()
+	local char = getChar()
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+	if state.jumpBoost then
+		pcall(function()
+			hum.UseJumpPower = true
+			hum.JumpPower = state.jumpPower
+		end)
+	else
+		pcall(function() hum.JumpPower = 50 end)
+	end
+end
+local function applySpeed()
+	local char = getChar()
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+	if state.speedBoost then
+		pcall(function() hum.WalkSpeed = state.speedValue end)
+	end
+end
+local function applyInvis()
+	local char = getChar()
+	if not char then return end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+			pcall(function() p.LocalTransparencyModifier = state.invisible and 1 or 0 end)
+			pcall(function() p.Transparency = state.invisible and 1 or p.Transparency end)
+		elseif p:IsA("Decal") or p:IsA("Texture") then
+			pcall(function() p.Transparency = state.invisible and 1 or 0 end)
+		end
+	end
+	-- hide accessories
+	for _, acc in ipairs(char:GetChildren()) do
+		if acc:IsA("Accessory") then
+			local h = acc:FindFirstChild("Handle")
+			if h then h.Transparency = state.invisible and 1 or 0 end
+		end
+	end
+end
+RunService.Heartbeat:Connect(function()
+	if state.jumpBoost or state.speedBoost then
+		applyJump(); applySpeed()
+	end
+end)
+RunService.Stepped:Connect(function()
+	if state.invisible then applyInvis() end
+end)
 
 --============ FLY ============
 local flyConn, bv, bg, savedWalk
@@ -296,13 +377,10 @@ local function startFly()
 	hum.WalkSpeed = 0
 	bv = Instance.new("BodyVelocity")
 	bv.MaxForce = Vector3.new(1e5,1e5,1e5)
-	bv.Velocity = Vector3.zero
-	bv.Parent = hrp
+	bv.Velocity = Vector3.zero; bv.Parent = hrp
 	bg = Instance.new("BodyGyro")
 	bg.MaxTorque = Vector3.new(1e5,1e5,1e5)
-	bg.P = 9e4
-	bg.CFrame = hrp.CFrame
-	bg.Parent = hrp
+	bg.P = 9e4; bg.CFrame = hrp.CFrame; bg.Parent = hrp
 	flyConn = RunService.Heartbeat:Connect(function()
 		if not isAlive(char) then return end
 		local cam = workspace.CurrentCamera
@@ -415,7 +493,7 @@ local function itemPriority(name)
 	return best
 end
 
---============ AUTO COLLECT (priority + closest + speed + tp) ============
+--============ AUTO COLLECT ============
 local acAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.autoCollect then return end
@@ -629,7 +707,7 @@ local function makeUI()
 	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.new(0, 250, 0, 380)
+	panel.Size = UDim2.new(0, 250, 0, 400)
 	panel.Position = UDim2.new(0, 16, 0, 60)
 	panel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 	panel.BackgroundTransparency = 0.05
@@ -649,7 +727,7 @@ local function makeUI()
 	title.Position = UDim2.new(0, 12, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v7.0.0"
+	title.Text = "olltaterfx v8.0.0"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
 	title.TextSize = 14
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -660,11 +738,9 @@ local function makeUI()
 	minusBtn.Position = UDim2.new(1, -32, 0, 3)
 	minusBtn.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
 	minusBtn.Text = "−"
-	minusBtn.Font = Enum.Font.GothamBold
-	minusBtn.TextSize = 18
+	minusBtn.Font = Enum.Font.GothamBold; minusBtn.TextSize = 18
 	minusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	minusBtn.BorderSizePixel = 0
-	minusBtn.Parent = header
+	minusBtn.BorderSizePixel = 0; minusBtn.Parent = header
 	local mc = Instance.new("UICorner")
 	mc.CornerRadius = UDim.new(1, 0); mc.Parent = minusBtn
 
@@ -866,8 +942,7 @@ local function makeUI()
 			btn.Position = UDim2.new(0, 0, 0, y)
 			btn.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
 			btn.Text = label
-			btn.Font = Enum.Font.GothamBold
-			btn.TextSize = 12
+			btn.Font = Enum.Font.GothamBold; btn.TextSize = 12
 			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
 			btn.BorderSizePixel = 0; btn.Parent = scroll
 			local bc = Instance.new("UICorner")
@@ -884,10 +959,10 @@ local function makeUI()
 		return b
 	end
 
-	-- ===== AUTO TAB =====
+	-- ===== AUTO =====
 	do
 		local b = buildersFor(tabs.AUTO.scroll)
-		b.addHeader("AUTO COLLECT (đích danh > keyword)")
+		b.addHeader("AUTO COLLECT")
 		b.addToggle("Auto Collect", function() return state.autoCollect end,
 			function(v) state.autoCollect = v end)
 		b.addToggle("TP khi nhặt", function() return state.tpOnCollect end,
@@ -903,7 +978,7 @@ local function makeUI()
 			local n = pullItems()
 			local fb = Instance.new("TextLabel")
 			fb.Size = UDim2.new(1, -12, 0, 30)
-			fb.Position = UDim2.new(0, 6, 0, 340)
+			fb.Position = UDim2.new(0, 6, 0, 360)
 			fb.BackgroundColor3 = Color3.fromRGB(40, 200, 100)
 			fb.Text = "Đã kéo " .. n .. " item"
 			fb.Font = Enum.Font.GothamBold; fb.TextSize = 12
@@ -923,27 +998,25 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== FIGHT TAB =====
+	-- ===== FIGHT =====
 	do
 		local b = buildersFor(tabs.FIGHT.scroll)
-		b.addHeader("KILL AURA — REAL (touch hitbox + tool swing)")
+		b.addHeader("KILL AURA — REAL (tool-activate)")
 		b.addToggle("Player", function() return state.killAuraPlayer end,
 			function(v) state.killAuraPlayer = v end)
 		b.addSlider("Player Range", 5, 300, function() return state.auraRangePlayer end,
 			function(v) state.auraRangePlayer = v end)
-		b.addToggle("NPC (fixed)", function() return state.killAuraNPC end,
+		b.addToggle("NPC", function() return state.killAuraNPC end,
 			function(v) state.killAuraNPC = v end)
 		b.addSlider("NPC Range", 5, 300, function() return state.auraRangeNPC end,
 			function(v) state.auraRangeNPC = v end)
-
-		b.addHeader("DISGUISED AURA (reach + spam swing)")
+		b.addHeader("DISGUISED AURA")
 		b.addToggle("Disguised Aura", function() return state.disguisedAura end,
 			function(v) state.disguisedAura = v end)
 		b.addSlider("Reach", 5, 60, function() return state.disguiseRange end,
 			function(v) state.disguiseRange = v end)
 		b.addSlider("Swing Rate (s)", 0.03, 0.5, function() return state.spamRate end,
 			function(v) state.spamRate = v end, true)
-
 		b.addHeader("NPC FREEZE")
 		b.addToggle("Freeze NPC", function() return state.npcFreeze end,
 			function(v)
@@ -955,9 +1028,22 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== MOVE TAB =====
+	-- ===== MOVE =====
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
+		b.addHeader("SPEED BOOST")
+		b.addToggle("Speed Boost", function() return state.speedBoost end,
+			function(v) state.speedBoost = v; if not v then applySpeed() end end)
+		b.addSlider("Walk Speed", 16, 500, function() return state.speedValue end,
+			function(v) state.speedValue = v end)
+		b.addHeader("JUMP BOOST")
+		b.addToggle("Jump Boost", function() return state.jumpBoost end,
+			function(v) state.jumpBoost = v; applyJump() end)
+		b.addSlider("Jump Power", 50, 500, function() return state.jumpPower end,
+			function(v) state.jumpPower = v end)
+		b.addHeader("INVISIBLE")
+		b.addToggle("Invisible", function() return state.invisible end,
+			function(v) state.invisible = v; applyInvis() end)
 		b.addHeader("FLY")
 		b.addToggle("Fly", function() return state.fly end, function(v)
 			state.fly = v
@@ -971,7 +1057,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== ESP TAB =====
+	-- ===== ESP =====
 	do
 		local b = buildersFor(tabs.ESP.scroll)
 		b.addHeader("ESP")
@@ -1053,15 +1139,17 @@ end
 makeUI()
 
 LocalPlayer.CharacterAdded:Connect(function()
-	if state.fly then task.wait(1); startFly() end
+	task.wait(1)
+	if state.fly then startFly() end
+	applyJump(); applySpeed()
 end)
 
 --============ FINAL SEAL ============
--- sig: olltaterfx|v7|ofx|crisper2019|9b4e1d7a
-local _SEAL = { "olltaterfx", "v7", "ofx", "crisper2019", "9b4e1d7a" }
+-- sig: olltaterfx|v8|ofx|crisper2019|4d9f2e1b
+local _SEAL = { "olltaterfx", "v8", "ofx", "crisper2019", "4d9f2e1b" }
 local _sig = table.concat(_SEAL, "|")
 local _hash = 0
 for i = 1, #_sig do _hash = (_hash * 31 + string.byte(_sig, i)) % 0xFFFFFFFF end
-if _hash ~= 0x5B2C91E3 then
+if _hash ~= 0x7E4C90A2 then
 	warn("[olltaterfx] file signature mismatch — got altered copy?")
 end
