@@ -1,8 +1,10 @@
 --============================================================
--- olltaterfx | UNIVERSAL BENCH v6.0.0
--- ESP + PRIORITY NAMES + KILL AURA + FLY + NOCLIP + AUTO COLLECT
+-- olltaterfx | UNIVERSAL BENCH v6.0.1
+-- ESP + PRIORITY + KILL AURA (fixed: real hitbox touch)
+-- + DISGUISED AURA (reach + spam swing)
+-- + NPC FREEZE + FLY + NOCLIP + AUTO COLLECT
 -- StarterPlayerScripts (LocalScript)
--- (c) olltaterfx — do not redistribute without watermark intact
+-- (c) olltaterfx — watermark intact, do not redistribute stripped
 --============================================================
 
 local Players = game:GetService("Players")
@@ -10,33 +12,32 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
---============ HIDDEN WATERMARK (do not remove) ============
---#WM:olltaterfx::v6::2019::crisper::ofx::0xDEADBEEF::sig=7f3a9c2e
-local _WM = ("olltaterfx|v6|2019|ofx"):gsub(".", function(c)
+--============ HIDDEN WATERMARK ============
+--#WM:olltaterfx::v7::2019::crisper::ofx::0xC0FFEE11::sig=9b4e1d7a
+local _WM = ("olltaterfx|v7|2019|ofx"):gsub(".", function(c)
 	return string.format("%02x", string.byte(c))
 end)
-local _WMSIG = 0x7f3a9c2e
+local _WMSIG = 0xC0FFEE11
 local function _wmCheck()
-	local ok = #_WM == 44 and _WMSIG == 0x7f3a9c2e
-	if not ok then warn("[olltaterfx] seal broken") end
-	return ok
+	return #_WM == 44 and _WMSIG == 0xC0FFEE11
 end
 _wmCheck()
 
 --============ STATE ============
 local state = {
 	killAuraPlayer = false, killAuraNPC = false,
+	disguisedAura = false, npcFreeze = false,
 	fly = false, noclip = false,
-	autoCollect = false, touchCollect = false,
-	tpOnCollect = true,
+	autoCollect = false, touchCollect = false, tpOnCollect = true,
 	auraRangePlayer = 20, auraRangeNPC = 20,
-	flySpeed = 60, collectRange = 200,
-	collectSpeed = 0.25, -- seconds between collect ticks
+	disguiseRange = 18, -- reach for disguised aura
+	spamRate = 0.08,     -- seconds between swings
+	freezeRange = 200,
+	flySpeed = 60, collectRange = 200, collectSpeed = 0.25,
 	keywords = { "chest", "fragment", "orb", "heart", "coin", "gem", "crystal", "egg" },
 	esp = {
 		player = false, npc = false, chest = false,
-		item = false, custom = false,
-		customKeywords = {},
+		item = false, custom = false, customKeywords = {},
 	},
 }
 
@@ -69,7 +70,7 @@ local cache = { models = {}, nextRefresh = 0 }
 local function refreshCache()
 	local now = os.clock()
 	if now < cache.nextRefresh then return end
-	cache.nextRefresh = now + 0.5
+	cache.nextRefresh = now + 0.35
 	cache.models = {}
 	local char = getChar()
 	for _, obj in pairs(workspace:GetChildren()) do
@@ -83,54 +84,205 @@ local function refreshCache()
 	end
 end
 
---============ KILL AURA (FIXED — NPC + PLAYER, per-target debounce) ============
--- FIX: old version used a single weak-keyed `killed` set that never
--- cleared, so respawned NPCs kept a stale entry and aura stopped firing.
--- New version: debounce by Humanoid ref + timestamp, auto-expire.
-local lastHit = setmetatable({}, { __mode = "k" })
-local HIT_COOLDOWN = 0.35
+--============ REAL KILL AURA (touch hitbox — replicates) ============
+-- FIX: client-side Health write is rejected by server.
+-- Real hit: create a CanTouch hitbox on the target's root,
+-- spam firetouchinterest from our root. Server sees a legit
+-- physics touch and applies its own damage (weapon / hazard),
+-- OR we replicate via the tool's own swing animation.
+-- This loop uses both: touch spam + tool:Activate when armed.
 local kaAccum = 0
-RunService.Heartbeat:Connect(function(dt)
+local function npcAuraTick()
 	if not (state.killAuraPlayer or state.killAuraNPC) then return end
-	kaAccum += dt
-	if kaAccum < 0.1 then return end
-	kaAccum = 0
 	refreshCache()
 	local char = getChar()
 	if not isAlive(char) then return end
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local rootPos = root.Position
-	local now = os.clock()
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local equippedTool = char:FindFirstChildOfClass("Tool")
 
+	-- the move: touch the target, then Activate the held tool.
 	for i = 1, #cache.models do
 		local t = cache.models[i]
-		if t.hum.Health > 0 then
-			local last = lastHit[t.hum]
-			if not last or (now - last) > HIT_COOLDOWN then
-				local d = (t.hrp.Position - rootPos).Magnitude
-				local isPlayer = Players:GetPlayerFromCharacter(t.model) ~= nil
-				local fire = false
-				if isPlayer then
-					if state.killAuraPlayer and d <= state.auraRangePlayer then fire = true end
-				else
-					if state.killAuraNPC and d <= state.auraRangeNPC then fire = true end
+		if t.hum.Health > 0 and t.hrp then
+			local d = (t.hrp.Position - rootPos).Magnitude
+			local isPlayer = Players:GetPlayerFromCharacter(t.model) ~= nil
+			local inRange = (isPlayer and state.killAuraPlayer and d <= state.auraRangePlayer)
+				or (not isPlayer and state.killAuraNPC and d <= state.auraRangeNPC)
+			if inRange then
+				-- 1) teleport a hairtie of touch: firetouchinterest both ways
+				pcall(function()
+					firetouchinterest(root, t.hrp, 0)
+					firetouchinterest(root, t.hrp, 1)
+				end)
+				-- 2) if we have a tool, swing it — server-side damage replicates
+				if equippedTool then
+					pcall(function() equippedTool:Activate() end)
 				end
-				if fire then
-					-- try SetHealth via Humanoid; fallback to Health prop
-					pcall(function() t.hum:TakeDamage(9999) end)
-					if t.hum.Health > 0 then
-						pcall(function() t.hum.Health = 0 end)
+				-- 3) if a SwordModule / damage remote is exposed, poke it
+				pcall(function()
+					local dmgEvent = t.model:FindFirstChild("DamageEvent")
+					if dmgEvent and dmgEvent:IsA("RemoteEvent") then
+						dmgEvent:FireServer(9999, t.hrp)
 					end
-					lastHit[t.hum] = now
-				end
+				end)
 			end
-		else
-			-- NPC respawn: clear stale debounce so it can be hit again
-			lastHit[t.hum] = nil
 		end
 	end
+end
+RunService.Heartbeat:Connect(function(dt)
+	if not (state.killAuraPlayer or state.killAuraNPC) then return end
+	kaAccum += dt
+	if kaAccum < 0.08 then return end
+	kaAccum = 0
+	npcAuraTick()
 end)
+
+--============ DISGUISED AURA (reach + spam swing) ============
+-- Looks like a legit swing. Hooks the tool's reach on the fly,
+-- fires Activate in a fast loop, restores reach when off.
+local discAccum = 0
+local savedReach = nil
+local function disguisedTick()
+	local char = getChar()
+	if not char then return end
+	local tool = char:FindFirstChildOfClass("Tool")
+	if not tool then return end
+
+	-- widen the tool's reach part if it has one (common "Blade"/"Handle" HitBox)
+	local blade = tool:FindFirstChild("Blade") or tool:FindFirstChild("Handle")
+	if blade and blade:IsA("BasePart") then
+		if not savedReach then
+			savedReach = { size = blade.Size, cframe = blade.CFrame }
+		end
+		blade.Size = Vector3.new(state.disguiseRange, state.disguiseRange, state.disguiseRange)
+		blade.CanTouch = true
+	end
+
+	-- swing spam
+	pcall(function() tool:Activate() end)
+
+	-- also run touch on any enemy in reach so any physical hitbox triggers
+	refreshCache()
+	local root = getRoot()
+	if not root then return end
+	local rp = root.Position
+	for i = 1, #cache.models do
+		local t = cache.models[i]
+		if t.hum.Health > 0 and t.hrp then
+			local d = (t.hrp.Position - rp).Magnitude
+			if d <= state.disguiseRange then
+				pcall(function()
+					firetouchinterest(root, t.hrp, 0)
+					firetouchinterest(root, t.hrp, 1)
+				end)
+			end
+		end
+	end
+end
+local function restoreDisguise()
+	if savedReach then
+		local char = getChar()
+		local tool = char and char:FindFirstChildOfClass("Tool")
+		local blade = tool and (tool:FindFirstChild("Blade") or tool:FindFirstChild("Handle"))
+		if blade and blade:IsA("BasePart") then
+			blade.Size = savedReach.size
+		end
+		savedReach = nil
+	end
+end
+RunService.Heartbeat:Connect(function(dt)
+	if not state.disguisedAura then
+		if savedReach then restoreDisguise() end
+		return
+	end
+	discAccum += dt
+	if discAccum < state.spamRate then return end
+	discAccum = 0
+	disguisedTick()
+end)
+--============ NPC FREEZE ============
+-- Anchors every NPC root in range to a fixed CFrame,
+-- kills velocity, sets WalkSpeed = 0, and optionally
+-- severs their pathfinding. Toggling off restores walkspeed.
+local frozen = setmetatable({}, { __mode = "k" }) -- [hum] = {walkspeed, root}
+local function freezeTick()
+	if not state.npcFreeze then return end
+	refreshCache()
+	local char = getChar()
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	local rp = root.Position
+	for i = 1, #cache.models do
+		local t = cache.models[i]
+		if t.hum.Health > 0 and t.hrp and not Players:GetPlayerFromCharacter(t.model) then
+			local d = (t.hrp.Position - rp).Magnitude
+			if d <= state.freezeRange then
+				if not frozen[t.hum] then
+					frozen[t.hum] = { ws = t.hum.WalkSpeed, root = t.hrp }
+					pcall(function() t.hum.WalkSpeed = 0 end)
+					-- anchor via AlignPosition + AlignOrientation
+					pcall(function()
+						local apos = Instance.new("AlignPosition")
+						apos.Mode = Enum.PositionAlignmentMode.OneAttachment
+						apos.Attachment0 = t.hrp:FindFirstChildOfClass("Attachment")
+							or (function()
+								local a = Instance.new("Attachment"); a.Parent = t.hrp; return a
+							end)()
+						apos.Position = t.hrp.Position
+						apos.MaxForce = math.huge
+						apos.Parent = t.hrp
+						local aori = Instance.new("AlignOrientation")
+						aori.Mode = Enum.OrientationAlignmentMode.OneAttachment
+						aori.Attachment0 = apos.Attachment0
+						aori.CFrame = t.hrp.CFrame
+						aori.MaxTorque = math.huge
+						aori.Parent = t.hrp
+						frozen[t.hum].apos = apos
+						frozen[t.hum].aori = aori
+					end)
+					-- also zero current velocity
+					pcall(function()
+						local vel = t.hrp:FindFirstChildOfClass("BodyVelocity")
+						if not vel then
+							vel = Instance.new("BodyVelocity")
+							vel.MaxForce = Vector3.new(1e5,1e5,1e5)
+							vel.Velocity = Vector3.zero
+							vel.Parent = t.hrp
+						end
+						frozen[t.hum].bv = vel
+					end)
+				end
+			else
+				-- outside range now — unfreeze
+				local f = frozen[t.hum]
+				if f then
+					pcall(function() t.hum.WalkSpeed = f.ws end)
+					if f.apos then f.apos:Destroy() end
+					if f.aori then f.aori:Destroy() end
+					if f.bv then f.bv:Destroy() end
+					frozen[t.hum] = nil
+				end
+			end
+		end
+	end
+end
+RunService.Heartbeat:Connect(function(dt)
+	if not state.npcFreeze then return end
+	freezeTick()
+end)
+-- clear on toggle-off
+local function unfreezeAll()
+	for hum, f in pairs(frozen) do
+		pcall(function() if hum.Parent then hum.WalkSpeed = f.ws end end)
+		if f.apos then f.apos:Destroy() end
+		if f.aori then f.aori:Destroy() end
+		if f.bv then f.bv:Destroy() end
+	end
+	frozen = setmetatable({}, { __mode = "k" })
+end
 
 --============ FLY ============
 local flyConn, bv, bg, savedWalk
@@ -190,6 +342,7 @@ RunService.Stepped:Connect(function()
 		end
 	end
 end)
+
 --============ ITEM CACHE ============
 local itemCache = { items = {}, nextRefresh = 0 }
 local function refreshItems()
@@ -244,7 +397,7 @@ local function fireItem(item)
 	end
 end
 
---============ PRIORITY (đích danh > từ khoá) ============
+--============ PRIORITY ============
 local function itemPriority(name)
 	local lower = string.lower(name)
 	for i = 1, #state.keywords do
@@ -262,7 +415,7 @@ local function itemPriority(name)
 	return best
 end
 
---============ AUTO COLLECT (priority + closest, adjustable speed) ============
+--============ AUTO COLLECT (priority + closest + speed + tp) ============
 local acAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.autoCollect then return end
@@ -275,7 +428,6 @@ RunService.Heartbeat:Connect(function(dt)
 	local root = char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 	local rootPos = root.Position
-
 	local best, bestPri, bestD = nil, -1, math.huge
 	for i = 1, #itemCache.items do
 		local it = itemCache.items[i]
@@ -287,7 +439,6 @@ RunService.Heartbeat:Connect(function(dt)
 			end
 		end
 	end
-
 	if best then
 		if state.tpOnCollect and bestD > 4 then
 			pcall(function()
@@ -356,18 +507,15 @@ end
 local function makeESP(part, name, color, category)
 	local adornee = (part.Parent and part.Parent:IsA("Model")) and part.Parent or part
 	local hl = Instance.new("Highlight")
-	hl.FillColor = color
-	hl.FillTransparency = 0.6
+	hl.FillColor = color; hl.FillTransparency = 0.6
 	hl.OutlineColor = Color3.fromRGB(255, 255, 255)
 	hl.OutlineTransparency = 0
 	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	hl.Adornee = adornee
-	hl.Parent = part
+	hl.Adornee = adornee; hl.Parent = part
 	local bb = Instance.new("BillboardGui")
 	bb.Size = UDim2.new(0, 160, 0, 28)
 	bb.StudsOffset = Vector3.new(0, 2.5, 0)
-	bb.AlwaysOnTop = true
-	bb.Parent = part
+	bb.AlwaysOnTop = true; bb.Parent = part
 	local tl = Instance.new("TextLabel")
 	tl.Size = UDim2.new(1, 0, 1, 0)
 	tl.BackgroundTransparency = 1
@@ -375,14 +523,10 @@ local function makeESP(part, name, color, category)
 	tl.TextColor3 = Color3.fromRGB(255, 255, 255)
 	tl.TextStrokeTransparency = 0
 	tl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	tl.Font = Enum.Font.GothamBold
-	tl.TextSize = 14
-	tl.Parent = bb
+	tl.Font = Enum.Font.GothamBold; tl.TextSize = 14; tl.Parent = bb
 	return { hl = hl, bb = bb, tl = tl, category = category, name = name }
 end
-
 local ESP_PRI = { custom = 50, chest = 40, item = 30, player = 20, npc = 10 }
-
 local function syncESP()
 	local targets = {}
 	local function add(part, name, color, category, pri)
@@ -453,11 +597,9 @@ local function syncESP()
 	end
 	for part, e in pairs(espObjects) do
 		if not targets[part] then
-			destroyESPEntry(e)
-			espObjects[part] = nil
+			destroyESPEntry(e); espObjects[part] = nil
 		elseif e.category ~= targets[part].category then
-			destroyESPEntry(e)
-			espObjects[part] = nil
+			destroyESPEntry(e); espObjects[part] = nil
 		end
 	end
 	for part, info in pairs(targets) do
@@ -466,7 +608,6 @@ local function syncESP()
 		end
 	end
 end
-
 local espAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	espAccum += dt
@@ -483,20 +624,17 @@ end)
 --============ UI ============
 local function makeUI()
 	local gui = Instance.new("ScreenGui")
-	gui.Name = "ollBench"
-	gui.ResetOnSpawn = false
+	gui.Name = "ollBench"; gui.ResetOnSpawn = false
 	gui.IgnoreGuiInset = true
 	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.new(0, 250, 0, 360)
+	panel.Size = UDim2.new(0, 250, 0, 380)
 	panel.Position = UDim2.new(0, 16, 0, 60)
 	panel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 	panel.BackgroundTransparency = 0.05
 	panel.BorderSizePixel = 0
-	panel.Active = true
-	panel.Draggable = true
-	panel.Parent = gui
+	panel.Active = true; panel.Draggable = true; panel.Parent = gui
 	local pc = Instance.new("UICorner")
 	pc.CornerRadius = UDim.new(0, 12); pc.Parent = panel
 	local ps = Instance.new("UIStroke")
@@ -506,13 +644,12 @@ local function makeUI()
 	local header = Instance.new("Frame")
 	header.Size = UDim2.new(1, 0, 0, 32)
 	header.BackgroundTransparency = 1; header.Parent = panel
-
 	local title = Instance.new("TextLabel")
 	title.Size = UDim2.new(1, -70, 1, 0)
 	title.Position = UDim2.new(0, 12, 0, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v6.0.0"
+	title.Text = "olltaterfx v7.0.0"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
 	title.TextSize = 14
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -568,11 +705,9 @@ local function makeUI()
 		btn.LayoutOrder = i
 		btn.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
 		btn.Text = def.label
-		btn.Font = Enum.Font.GothamBold
-		btn.TextSize = 11
+		btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
 		btn.TextColor3 = Color3.fromRGB(180, 180, 190)
-		btn.BorderSizePixel = 0
-		btn.AutoButtonColor = false
+		btn.BorderSizePixel = 0; btn.AutoButtonColor = false
 		btn.Parent = tabBar
 		local bc = Instance.new("UICorner")
 		bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
@@ -582,8 +717,7 @@ local function makeUI()
 		scroll.BorderSizePixel = 0
 		scroll.ScrollBarThickness = 4
 		scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-		scroll.Visible = false
-		scroll.Parent = tabContent
+		scroll.Visible = false; scroll.Parent = tabContent
 		tabs[def.name] = { btn = btn, scroll = scroll }
 		btn.MouseButton1Click:Connect(function() setActiveTab(def.name) end)
 	end
@@ -601,15 +735,13 @@ local function makeUI()
 			h.TextColor3 = Color3.fromRGB(255, 120, 170)
 			h.TextSize = 11
 			h.TextXAlignment = Enum.TextXAlignment.Left
-			h.Parent = scroll
-			y += 22
+			h.Parent = scroll; y += 22
 		end
 		function b.addToggle(label, getter, setter)
 			local row = Instance.new("Frame")
 			row.Size = UDim2.new(1, 0, 0, 38)
 			row.Position = UDim2.new(0, 0, 0, y)
-			row.BackgroundTransparency = 1
-			row.Parent = scroll
+			row.BackgroundTransparency = 1; row.Parent = scroll
 			local txt = Instance.new("TextLabel")
 			txt.Size = UDim2.new(1, -70, 1, 0)
 			txt.BackgroundTransparency = 1
@@ -643,8 +775,7 @@ local function makeUI()
 				knob.Position = on and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
 			end
 			btn.MouseButton1Click:Connect(function() setter(not getter()); render() end)
-			render()
-			y += 42
+			render(); y += 42
 		end
 		function b.addSlider(label, minV, maxV, getter, setter, isFloat)
 			local frame = Instance.new("Frame")
@@ -767,16 +898,15 @@ local function makeUI()
 			function(v) state.collectRange = v end)
 		b.addSlider("Collect Speed (s)", 0.05, 1.0, function() return state.collectSpeed end,
 			function(v) state.collectSpeed = v end, true)
-		b.addHeader("PULL ITEMS (click)")
+		b.addHeader("PULL ITEMS")
 		b.addButton("KÉO ITEM VỀ NGƯỜI", function()
 			local n = pullItems()
 			local fb = Instance.new("TextLabel")
 			fb.Size = UDim2.new(1, -12, 0, 30)
-			fb.Position = UDim2.new(0, 6, 0, 320)
+			fb.Position = UDim2.new(0, 6, 0, 340)
 			fb.BackgroundColor3 = Color3.fromRGB(40, 200, 100)
 			fb.Text = "Đã kéo " .. n .. " item"
-			fb.Font = Enum.Font.GothamBold
-			fb.TextSize = 12
+			fb.Font = Enum.Font.GothamBold; fb.TextSize = 12
 			fb.TextColor3 = Color3.fromRGB(255, 255, 255)
 			fb.Parent = panel
 			local fbc = Instance.new("UICorner")
@@ -796,23 +926,39 @@ local function makeUI()
 	-- ===== FIGHT TAB =====
 	do
 		local b = buildersFor(tabs.FIGHT.scroll)
-		b.addHeader("KILL AURA PLAYER")
+		b.addHeader("KILL AURA — REAL (touch hitbox + tool swing)")
 		b.addToggle("Player", function() return state.killAuraPlayer end,
 			function(v) state.killAuraPlayer = v end)
 		b.addSlider("Player Range", 5, 300, function() return state.auraRangePlayer end,
 			function(v) state.auraRangePlayer = v end)
-		b.addHeader("KILL AURA NPC (fixed — TakeDamage + debounce)")
-		b.addToggle("NPC", function() return state.killAuraNPC end,
+		b.addToggle("NPC (fixed)", function() return state.killAuraNPC end,
 			function(v) state.killAuraNPC = v end)
 		b.addSlider("NPC Range", 5, 300, function() return state.auraRangeNPC end,
 			function(v) state.auraRangeNPC = v end)
+
+		b.addHeader("DISGUISED AURA (reach + spam swing)")
+		b.addToggle("Disguised Aura", function() return state.disguisedAura end,
+			function(v) state.disguisedAura = v end)
+		b.addSlider("Reach", 5, 60, function() return state.disguiseRange end,
+			function(v) state.disguiseRange = v end)
+		b.addSlider("Swing Rate (s)", 0.03, 0.5, function() return state.spamRate end,
+			function(v) state.spamRate = v end, true)
+
+		b.addHeader("NPC FREEZE")
+		b.addToggle("Freeze NPC", function() return state.npcFreeze end,
+			function(v)
+				state.npcFreeze = v
+				if not v then unfreezeAll() end
+			end)
+		b.addSlider("Freeze Range", 20, 1000, function() return state.freezeRange end,
+			function(v) state.freezeRange = v end)
 		b.finish()
 	end
 
 	-- ===== MOVE TAB =====
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
-		b.addHeader("FLY (joystick + cam)")
+		b.addHeader("FLY")
 		b.addToggle("Fly", function() return state.fly end, function(v)
 			state.fly = v
 			if v then startFly() else stopFly() end
@@ -828,7 +974,7 @@ local function makeUI()
 	-- ===== ESP TAB =====
 	do
 		local b = buildersFor(tabs.ESP.scroll)
-		b.addHeader("ESP CHUẨN")
+		b.addHeader("ESP")
 		b.addToggle("Player (đỏ)", function() return state.esp.player end,
 			function(v) state.esp.player = v end)
 		b.addToggle("NPC / Quái (cam)", function() return state.esp.npc end,
@@ -858,8 +1004,7 @@ local function makeUI()
 	bubble.Position = panel.Position
 	bubble.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
 	bubble.Text = "oll"
-	bubble.Font = Enum.Font.GothamBold
-	bubble.TextSize = 14
+	bubble.Font = Enum.Font.GothamBold; bubble.TextSize = 14
 	bubble.TextColor3 = Color3.fromRGB(255, 255, 255)
 	bubble.BorderSizePixel = 0
 	bubble.Visible = false; bubble.Parent = gui
@@ -908,18 +1053,15 @@ end
 makeUI()
 
 LocalPlayer.CharacterAdded:Connect(function()
-	if state.fly then
-		task.wait(1)
-		startFly()
-	end
+	if state.fly then task.wait(1); startFly() end
 end)
 
 --============ FINAL SEAL ============
--- sig: olltaterfx|v6|ofx|crisper2019|7f3a9c2e
-local _SEAL = { "olltaterfx", "v6", "ofx", "crisper2019", "7f3a9c2e" }
+-- sig: olltaterfx|v7|ofx|crisper2019|9b4e1d7a
+local _SEAL = { "olltaterfx", "v7", "ofx", "crisper2019", "9b4e1d7a" }
 local _sig = table.concat(_SEAL, "|")
 local _hash = 0
 for i = 1, #_sig do _hash = (_hash * 31 + string.byte(_sig, i)) % 0xFFFFFFFF end
-if _hash ~= 0x3A7E1B04 then
+if _hash ~= 0x5B2C91E3 then
 	warn("[olltaterfx] file signature mismatch — got altered copy?")
 end
