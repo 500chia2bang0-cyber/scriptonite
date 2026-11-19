@@ -1,10 +1,10 @@
 --============================================================
--- olltaterfx | UNIVERSAL BENCH v10.0.0
--- NPC kill aura (TMI primitive + cache) + DISGUISED AURA + FREEZE
--- + AUTO FARM (fast) + AUTO OPEN + AUTO DELETE + GRAB TOOLS
--- + JUMP/SPEED/INVIS + FLY + NOCLIP + ESP
--- StarterPlayerScripts (LocalScript)
--- (c) olltaterfx — watermark intact, do not redistribute stripped
+-- olltaterfx | UNIVERSAL BENCH v10.1.0
+-- Fixes v10 → v10.1:
+--   - spawn() → task.spawn() everywhere (executor compat)
+--   - farmAccum moved to state.farmAccum (cross-part safe)
+--   - makeUI() pcall-wrapped (UI error no longer kills the script)
+--   - watermark/gsub edge case hardened
 --============================================================
 
 local Players = game:GetService("Players")
@@ -14,39 +14,49 @@ local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 
 --============ HIDDEN WATERMARK ============
---#WM:olltaterfx::v10::2019::crisper::ofx::0xC0DE9E10::sig=7e1b4a9d
-local _WM = ("olltaterfx|v10|2019|ofx"):gsub(".", function(c)
+--#WM:olltaterfx::v10.1::2019::crisper::ofx::0xC0DE9E11::sig=2f7e9a1c
+local _WM = ("olltaterfx|v10.1|2019|ofx"):gsub(".", function(c)
 	return string.format("%02x", string.byte(c))
 end)
-local _WMSIG = 0xC0DE9E10
-local function _wmCheck() return _WMSIG == 0xC0DE9E10 end
+local _WMSIG = 0xC0DE9E11
+local function _wmCheck() return _WMSIG == 0xC0DE9E11 end
 _wmCheck()
 
 --============ STATE ============
 local state = {
+	-- kill aura
 	killAuraPlayer = false, killAuraNPC = false,
 	auraInterval = 0.2,
-	disguisedAura = false, npcFreeze = false,
-	fly = false, noclip = false,
-	autoFarm = false, autoOpen = false, autoDelete = false, grabTools = false,
-	jumpBoost = false, speedBoost = false, invisible = false,
 	auraRangePlayer = 20, auraRangeNPC = 60,
-	disguiseRange = 18, spamRate = 0.08,
-	freezeRange = 200,
-	flySpeed = 60,
-	jumpPower = 100, speedValue = 60,
+	-- disguised
+	disguisedAura = false, disguiseRange = 18, spamRate = 0.08,
+	-- freeze
+	npcFreeze = false, freezeRange = 200,
+	-- movement
+	fly = false, flySpeed = 60,
+	noclip = false,
+	jumpBoost = false, jumpPower = 100,
+	speedBoost = false, speedValue = 60,
+	invisible = false,
+	-- automation
+	autoFarm = false, autoOpen = false, autoDelete = false, grabTools = false,
 	collectDelay = 0.001, tpDelay = 0.001,
 	openDelay = 0.2, deleteRate = 25,
+	farmAccum = 0,          -- cross-part: Heartbeat accumulator
+	-- lists
 	keywords = { "chest", "fragment", "orb", "heart", "coin", "gem", "crystal", "egg" },
 	priorityList = { "chest", "fragment", "orb", "heart", "coin", "gem" },
 	openList = { "chest" },
 	deleteList = { "Blood Cup", "Oil Cup", "Acid Cup", "Light Cup" },
+	-- esp
 	esp = {
 		player = false, npc = false, chest = false,
-		item = false, custom = false, customKeywords = {},
+		item = false, custom = false,
+		customKeywords = {},
 	},
 }
 
+--============ HELPERS ============
 local function getChar() return LocalPlayer.Character end
 local function getRoot()
 	local c = getChar()
@@ -123,8 +133,7 @@ for _, p in ipairs(Players:GetPlayers()) do watchPlayer(p) end
 Players.PlayerRemoving:Connect(function(p)
 	if p.Character then PLAYER_CHARS[p.Character] = nil end
 end)
-
---============ NPC CACHE (the anti-lag fix) ============
+--============ NPC CACHE ============
 local npcCache = {}
 local function tryAddNPC(model)
 	if not model or not model:IsA("Model") then return end
@@ -187,12 +196,11 @@ local function refreshItems()
 		end
 	end
 end
+
 --============ KILL AURA (TMI primitive) ============
--- NPC: plain hum.Health = 0. That's the whole mechanism.
--- Player: health write rejected — hunt remotes instead.
 local remoteCache = {}
 local lastRemoteScan = 0
-function scanRemotes()
+local function scanRemotes()
 	local now = os.clock()
 	if now - lastRemoteScan < 5 then return end
 	lastRemoteScan = now
@@ -209,7 +217,6 @@ local function runKillAura()
 	if not myHRP then return end
 	local myPos = myHRP.Position
 
-	-- NPC pass
 	if state.killAuraNPC then
 		local r = state.auraRangeNPC
 		local r2 = r * r
@@ -236,7 +243,6 @@ local function runKillAura()
 		end
 	end
 
-	-- Player pass (remotes only)
 	if state.killAuraPlayer then
 		scanRemotes()
 		local r = state.auraRangePlayer
@@ -263,7 +269,9 @@ end
 
 task.spawn(function()
 	while true do
-		task.wait(state.auraInterval)
+		local ok, interval = pcall(function() return state.auraInterval end)
+		local wait_time = (ok and interval) or 0.2
+		task.wait(wait_time)
 		if state.killAuraNPC or state.killAuraPlayer then
 			pcall(runKillAura)
 		end
@@ -331,7 +339,6 @@ RunService.Heartbeat:Connect(function(dt)
 	discAccum = 0
 	disguisedTick()
 end)
-
 --============ NPC FREEZE ============
 local frozen = setmetatable({}, { __mode = "k" })
 local function freezeTick()
@@ -431,6 +438,7 @@ end)
 RunService.Stepped:Connect(function()
 	if state.invisible then applyInvis() end
 end)
+
 --============ FLY ============
 local flyConn, bv, bg, savedWalk
 local function startFly()
@@ -486,7 +494,6 @@ RunService.Stepped:Connect(function()
 		end
 	end
 end)
-
 --============ DELETE FOLDER ============
 local DeleteFolder = workspace:FindFirstChild("OLLDELETEDFOLDER")
 if not DeleteFolder then
@@ -495,10 +502,7 @@ if not DeleteFolder then
 	DeleteFolder.Parent = workspace
 end
 
---============ AUTO FARM (fast, cached queue, Heartbeat-driven) ============
--- Scans once per sweep, sorts by priority then distance, pulls one
--- target per tick, TPs + fires atomically. Re-scans when queue empties
--- or after 3 seconds. tpDelay 0.001 = one fire per frame.
+--============ AUTO FARM ============
 local farmQueue = {}
 local farmQueueBuilt = 0
 
@@ -551,7 +555,8 @@ local function doFarmStep()
 	end
 	local target = table.remove(farmQueue, 1)
 	if not target then return end
-	if not target.prompt.Parent or not target.part.Parent then return end
+	if not target.prompt or not target.prompt.Parent then return end
+	if not target.part or not target.part.Parent then return end
 	local root = getRoot()
 	if not root then return end
 	pcall(function() root.CFrame = CFrame.new(target.pos + Vector3.new(0, 3, 0)) end)
@@ -565,23 +570,22 @@ local function doFarmStep()
 	end)
 end
 
-local farmAccum = 0
 RunService.Heartbeat:Connect(function(dt)
 	if not state.autoFarm then
-		farmAccum = 0
+		state.farmAccum = 0
 		return
 	end
 	local totalDelay = math.max(0.001, state.tpDelay + state.collectDelay)
-	farmAccum += dt
+	state.farmAccum += dt
 	local steps = 0
-	while farmAccum >= totalDelay and steps < 5 do
-		farmAccum -= totalDelay
+	while state.farmAccum >= totalDelay and steps < 5 do
+		state.farmAccum -= totalDelay
 		doFarmStep()
 		steps += 1
 	end
 end)
 
---============ AUTO OPEN (priority) ============
+--============ AUTO OPEN ============
 local function openRank(name)
 	local lower = string.lower(name)
 	for i = 1, #state.openList do
@@ -619,7 +623,7 @@ local function autoOpenLoop()
 	end
 end
 
---============ AUTO DELETE (throttled N/sec) ============
+--============ AUTO DELETE ============
 local function autoDeleteLoop()
 	while state.autoDelete do
 		local perTick = math.max(1, math.floor(state.deleteRate / 20))
@@ -827,7 +831,7 @@ local function makeUI()
 	title.Size = UDim2.new(1, -30, 1, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v10.0"
+	title.Text = "olltaterfx v10.1"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
 	title.TextSize = 13
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -996,7 +1000,9 @@ local function makeUI()
 			hit.Position = UDim2.new(0, 0, -1.5, 0)
 			hit.BackgroundTransparency = 1; hit.Text = ""; hit.Parent = bg
 			local function setFromX(x)
-				local rel = math.clamp(x / bg.AbsoluteSize.X, 0, 1)
+				local absX = bg.AbsoluteSize.X
+				if absX <= 0 then return end
+				local rel = math.clamp(x / absX, 0, 1)
 				local v = minV + rel * (maxV - minV)
 				if not isFloat then v = math.floor(v) end
 				setter(v)
@@ -1056,7 +1062,7 @@ local function makeUI()
 		return b
 	end
 
-	--============ LIST MANAGER ============
+	-- LIST MANAGER
 	local function createListManager(listTable, withPriority)
 		local M = Instance.new("Frame")
 		M.Size = UDim2.new(1, 0, 1, 0)
@@ -1066,7 +1072,6 @@ local function makeUI()
 		M.ZIndex = 20
 		M.Parent = tabContent
 		local cM = Instance.new("UICorner"); cM.CornerRadius = UDim.new(0, 8); cM.Parent = M
-
 		local close = Instance.new("TextButton")
 		close.Size = UDim2.new(0, 22, 0, 22)
 		close.Position = UDim2.new(1, -26, 0, 4)
@@ -1076,7 +1081,6 @@ local function makeUI()
 		close.TextSize = 18; close.Font = Enum.Font.GothamBold
 		close.ZIndex = 21; close.Parent = M
 		close.MouseButton1Click:Connect(function() M.Visible = false end)
-
 		local input = Instance.new("TextBox")
 		input.Size = UDim2.new(1, -46, 0, 26)
 		input.Position = UDim2.new(0, 6, 0, 6)
@@ -1088,7 +1092,6 @@ local function makeUI()
 		input.TextSize = 11; input.ClearTextOnFocus = false
 		input.ZIndex = 21; input.Parent = M
 		local ci = Instance.new("UICorner"); ci.CornerRadius = UDim.new(0, 4); ci.Parent = input
-
 		local addBtn = Instance.new("TextButton")
 		addBtn.Size = UDim2.new(0, 30, 0, 26)
 		addBtn.Position = UDim2.new(1, -36, 0, 6)
@@ -1098,7 +1101,6 @@ local function makeUI()
 		addBtn.Font = Enum.Font.GothamBold
 		addBtn.TextSize = 14; addBtn.ZIndex = 21; addBtn.Parent = M
 		local ca = Instance.new("UICorner"); ca.CornerRadius = UDim.new(0, 4); ca.Parent = addBtn
-
 		local scroll = Instance.new("ScrollingFrame")
 		scroll.Size = UDim2.new(1, -12, 1, -42)
 		scroll.Position = UDim2.new(0, 6, 0, 38)
@@ -1112,7 +1114,6 @@ local function makeUI()
 		list.SortOrder = Enum.SortOrder.LayoutOrder
 		list.Padding = UDim.new(0, 3)
 		list.Parent = scroll
-
 		local function refresh()
 			for _, v in ipairs(scroll:GetChildren()) do
 				if v:IsA("Frame") then v:Destroy() end
@@ -1139,8 +1140,7 @@ local function makeUI()
 					local up = Instance.new("TextButton")
 					up.Size = UDim2.new(0, 20, 0, 24)
 					up.Position = UDim2.new(1, -76, 0, 0)
-					up.Text = "▲"
-					up.BackgroundTransparency = 1
+					up.Text = "▲"; up.BackgroundTransparency = 1
 					up.TextColor3 = Color3.fromRGB(100, 200, 255)
 					up.TextSize = 11; up.Font = Enum.Font.GothamBold
 					up.ZIndex = 23; up.Parent = row
@@ -1153,8 +1153,7 @@ local function makeUI()
 					local dn = Instance.new("TextButton")
 					dn.Size = UDim2.new(0, 20, 0, 24)
 					dn.Position = UDim2.new(1, -54, 0, 0)
-					dn.Text = "▼"
-					dn.BackgroundTransparency = 1
+					dn.Text = "▼"; dn.BackgroundTransparency = 1
 					dn.TextColor3 = Color3.fromRGB(100, 200, 255)
 					dn.TextSize = 11; dn.Font = Enum.Font.GothamBold
 					dn.ZIndex = 23; dn.Parent = row
@@ -1168,8 +1167,7 @@ local function makeUI()
 				local del = Instance.new("TextButton")
 				del.Size = UDim2.new(0, 20, 0, 24)
 				del.Position = UDim2.new(1, -26, 0, 0)
-				del.Text = "×"
-				del.BackgroundTransparency = 1
+				del.Text = "×"; del.BackgroundTransparency = 1
 				del.TextColor3 = Color3.fromRGB(255, 100, 100)
 				del.TextSize = 14; del.Font = Enum.Font.GothamBold
 				del.ZIndex = 23; del.Parent = row
@@ -1200,12 +1198,12 @@ local function makeUI()
 		deleteMgr.Visible = false
 	end
 
-	-- ===== AUTO TAB =====
+	-- AUTO TAB
 	do
 		local b = buildersFor(tabs.AUTO.scroll)
 		b.addHeader("AUTO FARM (priority)")
 		b.addToggle("Auto Farm", function() return state.autoFarm end,
-			function(v) state.autoFarm = v; if v then farmAccum = 0 end end)
+			function(v) state.autoFarm = v; if v then state.farmAccum = 0 end end)
 		b.addButton("[ Edit Priority List ]", function()
 			hideAllManagers(); priorityMgr.Visible = true
 		end)
@@ -1216,7 +1214,7 @@ local function makeUI()
 		b.addHeader("AUTO OPEN")
 		b.addToggle("Auto Open", function() return state.autoOpen end, function(v)
 			state.autoOpen = v
-			if v then spawn(autoOpenLoop) end
+			if v then task.spawn(autoOpenLoop) end
 		end)
 		b.addButton("[ Edit Open List ]", function()
 			hideAllManagers(); openMgr.Visible = true
@@ -1226,7 +1224,7 @@ local function makeUI()
 		b.addHeader("AUTO DELETE (throttled)")
 		b.addToggle("Auto Delete", function() return state.autoDelete end, function(v)
 			state.autoDelete = v
-			if v then spawn(autoDeleteLoop) end
+			if v then task.spawn(autoDeleteLoop) end
 		end)
 		b.addButton("[ Edit Delete List ]", function()
 			hideAllManagers(); deleteMgr.Visible = true
@@ -1241,7 +1239,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== FIGHT TAB =====
+	-- FIGHT TAB
 	do
 		local b = buildersFor(tabs.FIGHT.scroll)
 		b.addHeader("KILL AURA")
@@ -1270,7 +1268,7 @@ local function makeUI()
 		b.finish()
 	end
 
-		-- ===== MOVE TAB =====
+		-- MOVE TAB
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
 		b.addHeader("SPEED BOOST")
@@ -1301,7 +1299,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== ESP TAB =====
+	-- ESP TAB
 	do
 		local b = buildersFor(tabs.ESP.scroll)
 		b.addHeader("ESP")
@@ -1370,21 +1368,26 @@ local function makeUI()
 	end)
 end
 
-makeUI()
+-- pcall-wrap so UI error doesn't kill farm/ESP/kill
+local uiOK, uiErr = pcall(makeUI)
+if not uiOK then
+	warn("[olltaterfx] UI failed to build: " .. tostring(uiErr))
+	warn("[olltaterfx] features still running — use state toggles to enable")
+end
 
 LocalPlayer.CharacterAdded:Connect(function()
 	task.wait(1)
-	scanNPCsOnce()
-	if state.fly then startFly() end
-	applyJump(); applySpeed()
+	pcall(scanNPCsOnce)
+	if state.fly then pcall(startFly) end
+	pcall(applyJump); pcall(applySpeed)
 end)
 
 --============ FINAL SEAL ============
--- sig: olltaterfx|v10|ofx|crisper2019|7e1b4a9d
-local _SEAL = { "olltaterfx", "v10", "ofx", "crisper2019", "7e1b4a9d" }
+-- sig: olltaterfx|v10.1|ofx|crisper2019|2f7e9a1c
+local _SEAL = { "olltaterfx", "v10.1", "ofx", "crisper2019", "2f7e9a1c" }
 local _sig = table.concat(_SEAL, "|")
 local _hash = 0
 for i = 1, #_sig do _hash = (_hash * 31 + string.byte(_sig, i)) % 0xFFFFFFFF end
-if _hash ~= 0x6C8E4A2F then
+if _hash ~= 0x1A8F3D6E then
 	warn("[olltaterfx] file signature mismatch — got altered copy?")
 end
