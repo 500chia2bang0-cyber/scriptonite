@@ -1270,7 +1270,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== MOVE TAB =====
+		-- ===== MOVE TAB =====
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
 		b.addHeader("SPEED BOOST")
@@ -1291,4 +1291,100 @@ local function makeUI()
 			function(v) state.invisible = v; applyInvis() end)
 		b.addHeader("FLY")
 		b.addToggle("Fly", function() return state.fly end, function(v)
-			state.fly = v; if v 
+			state.fly = v; if v then startFly() else stopFly() end
+		end)
+		b.addSlider("Fly Speed", 20, 400, function() return state.flySpeed end,
+			function(v) state.flySpeed = v end)
+		b.addHeader("NOCLIP")
+		b.addToggle("Noclip", function() return state.noclip end,
+			function(v) state.noclip = v end)
+		b.finish()
+	end
+
+	-- ===== ESP TAB =====
+	do
+		local b = buildersFor(tabs.ESP.scroll)
+		b.addHeader("ESP")
+		b.addToggle("Player (đỏ)", function() return state.esp.player end,
+			function(v) state.esp.player = v end)
+		b.addToggle("NPC / Quái (cam)", function() return state.esp.npc end,
+			function(v) state.esp.npc = v end)
+		b.addToggle("Chest / Rương (vàng)", function() return state.esp.chest end,
+			function(v) state.esp.chest = v end)
+		b.addToggle("Item keyword (xanh lá)", function() return state.esp.item end,
+			function(v) state.esp.item = v end)
+		b.addHeader("ESP CUSTOM (tím)")
+		b.addToggle("Custom", function() return state.esp.custom end,
+			function(v) state.esp.custom = v end)
+		b.addTextBox("hyper chest,boss,relic,...",
+			function() return table.concat(state.esp.customKeywords, ",") end,
+			function(text)
+				local list = {}
+				for kw in string.gmatch(text, "[^,%s]+") do table.insert(list, kw) end
+				state.esp.customKeywords = list
+			end)
+		b.finish()
+	end
+
+	setActiveTab("AUTO")
+
+	local bubble = Instance.new("TextButton")
+	bubble.Size = UDim2.new(0, 48, 0, 48)
+	bubble.Position = panel.Position
+	bubble.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
+	bubble.Text = "oll"; bubble.Font = Enum.Font.GothamBold; bubble.TextSize = 13
+	bubble.TextColor3 = Color3.fromRGB(255, 255, 255)
+	bubble.BorderSizePixel = 0
+	bubble.Visible = false; bubble.Parent = gui
+	local bc2 = Instance.new("UICorner"); bc2.CornerRadius = UDim.new(1, 0); bc2.Parent = bubble
+
+	minusBtn.MouseButton1Click:Connect(function()
+		panel.Visible = false; bubble.Position = panel.Position; bubble.Visible = true
+	end)
+	local dragStart, startPos, moved
+	bubble.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or
+			input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragStart = input.Position; startPos = bubble.Position; moved = false
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if not dragStart then return end
+		if input.UserInputType == Enum.UserInputType.Touch or
+			input.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = input.Position - dragStart
+			if delta.Magnitude > 5 then moved = true end
+			bubble.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if not dragStart then return end
+		if input.UserInputType == Enum.UserInputType.Touch or
+			input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if not moved then
+				bubble.Visible = false; panel.Position = bubble.Position; panel.Visible = true
+			end
+			dragStart = nil
+		end
+	end)
+end
+
+makeUI()
+
+LocalPlayer.CharacterAdded:Connect(function()
+	task.wait(1)
+	scanNPCsOnce()
+	if state.fly then startFly() end
+	applyJump(); applySpeed()
+end)
+
+--============ FINAL SEAL ============
+-- sig: olltaterfx|v10|ofx|crisper2019|7e1b4a9d
+local _SEAL = { "olltaterfx", "v10", "ofx", "crisper2019", "7e1b4a9d" }
+local _sig = table.concat(_SEAL, "|")
+local _hash = 0
+for i = 1, #_sig do _hash = (_hash * 31 + string.byte(_sig, i)) % 0xFFFFFFFF end
+if _hash ~= 0x6C8E4A2F then
+	warn("[olltaterfx] file signature mismatch — got altered copy?")
+end
