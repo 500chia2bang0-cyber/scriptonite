@@ -845,170 +845,220 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 	syncESP()
 end)
---============ UI HELPERS ============
+			--============ UI (v9.1 clean rebuild) ============
 local function makeUI()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "ollBench"; gui.ResetOnSpawn = false
 	gui.IgnoreGuiInset = true
 	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
+	-- outer panel
 	local panel = Instance.new("Frame")
-	panel.Size = UDim2.new(0, 250, 0, 440)
+	panel.Size = UDim2.new(0, 260, 0, 480)
 	panel.Position = UDim2.new(0, 16, 0, 60)
-	panel.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-	panel.BackgroundTransparency = 0.05
+	panel.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 	panel.BorderSizePixel = 0
-	panel.Active = true; panel.Draggable = true; panel.Parent = gui
-	local pc = Instance.new("UICorner"); pc.CornerRadius = UDim.new(0, 12); pc.Parent = panel
+	panel.Active = true
+	panel.Draggable = true
+	panel.Parent = gui
+	local pc = Instance.new("UICorner"); pc.CornerRadius = UDim.new(0, 10); pc.Parent = panel
 	local ps = Instance.new("UIStroke")
 	ps.Color = Color3.fromRGB(255, 60, 120); ps.Thickness = 1.5
 	ps.Transparency = 0.2; ps.Parent = panel
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 8)
+	pad.PaddingBottom = UDim.new(0, 8)
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.Parent = panel
 
+	-- header row (title + minimize)
 	local header = Instance.new("Frame")
-	header.Size = UDim2.new(1, 0, 0, 32)
-	header.BackgroundTransparency = 1; header.Parent = panel
+	header.Size = UDim2.new(1, 0, 0, 26)
+	header.BackgroundTransparency = 1
+	header.Parent = panel
 	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, -70, 1, 0)
-	title.Position = UDim2.new(0, 12, 0, 0)
+	title.Size = UDim2.new(1, -30, 1, 0)
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
-	title.Text = "olltaterfx v9.0.0"
+	title.Text = "olltaterfx v9.1"
 	title.TextColor3 = Color3.fromRGB(255, 70, 130)
-	title.TextSize = 14
+	title.TextSize = 13
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.Parent = header
-
 	local minusBtn = Instance.new("TextButton")
-	minusBtn.Size = UDim2.new(0, 26, 0, 26)
-	minusBtn.Position = UDim2.new(1, -32, 0, 3)
+	minusBtn.Size = UDim2.new(0, 22, 0, 22)
+	minusBtn.Position = UDim2.new(1, -22, 0, 2)
 	minusBtn.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
 	minusBtn.Text = "−"
-	minusBtn.Font = Enum.Font.GothamBold; minusBtn.TextSize = 18
+	minusBtn.Font = Enum.Font.GothamBold; minusBtn.TextSize = 16
 	minusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 	minusBtn.BorderSizePixel = 0; minusBtn.Parent = header
 	local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(1, 0); mc.Parent = minusBtn
 
+	-- tab bar
 	local tabBar = Instance.new("Frame")
-	tabBar.Size = UDim2.new(1, -12, 0, 30)
-	tabBar.Position = UDim2.new(0, 6, 0, 34)
-	tabBar.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
-	tabBar.BorderSizePixel = 0; tabBar.Parent = panel
-	local tbc = Instance.new("UICorner"); tbc.CornerRadius = UDim.new(0, 8); tbc.Parent = tabBar
+	tabBar.Size = UDim2.new(1, 0, 0, 28)
+	tabBar.Position = UDim2.new(0, 0, 0, 34)
+	tabBar.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+	tabBar.BorderSizePixel = 0
+	tabBar.Parent = panel
+	local tbc = Instance.new("UICorner"); tbc.CornerRadius = UDim.new(0, 6); tbc.Parent = tabBar
+	local tabLayout = Instance.new("UIListLayout")
+	tabLayout.FillDirection = Enum.FillDirection.Horizontal
+	tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	tabLayout.Parent = tabBar
 
+	-- tab content
 	local tabContent = Instance.new("Frame")
-	tabContent.Size = UDim2.new(1, -12, 1, -76)
-	tabContent.Position = UDim2.new(0, 6, 0, 70)
-	tabContent.BackgroundTransparency = 1; tabContent.Parent = panel
+	tabContent.Size = UDim2.new(1, 0, 1, -70)
+	tabContent.Position = UDim2.new(0, 0, 0, 68)
+	tabContent.BackgroundTransparency = 1
+	tabContent.Parent = panel
 
 	local tabs = {}
 	local tabDefs = {
-		{ name = "AUTO", label = "AUTO" }, { name = "FIGHT", label = "FIGHT" },
-		{ name = "MOVE", label = "MOVE" }, { name = "ESP", label = "ESP" },
+		{ name = "AUTO", label = "AUTO" },
+		{ name = "FIGHT", label = "FIGHT" },
+		{ name = "MOVE", label = "MOVE" },
+		{ name = "ESP", label = "ESP" },
 	}
 	local function setActiveTab(name)
 		for n, t in pairs(tabs) do
 			t.scroll.Visible = (n == name)
-			t.btn.BackgroundColor3 = (n == name) and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(25, 25, 32)
-			t.btn.TextColor3 = (n == name) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 190)
+			t.btn.BackgroundColor3 = (n == name) and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(24, 24, 30)
+			t.btn.TextColor3 = (n == name) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 160, 170)
 		end
 	end
 	for i, def in ipairs(tabDefs) do
 		local btn = Instance.new("TextButton")
 		btn.Size = UDim2.new(1 / #tabDefs, 0, 1, 0)
 		btn.LayoutOrder = i
-		btn.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+		btn.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 		btn.Text = def.label
 		btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
-		btn.TextColor3 = Color3.fromRGB(180, 180, 190)
+		btn.TextColor3 = Color3.fromRGB(160, 160, 170)
 		btn.BorderSizePixel = 0; btn.AutoButtonColor = false
 		btn.Parent = tabBar
-		local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
+		local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 6); bc.Parent = btn
 		local scroll = Instance.new("ScrollingFrame")
 		scroll.Size = UDim2.new(1, 0, 1, 0)
 		scroll.BackgroundTransparency = 1
 		scroll.BorderSizePixel = 0
-		scroll.ScrollBarThickness = 4
+		scroll.ScrollBarThickness = 3
+		scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 60, 120)
 		scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-		scroll.Visible = false; scroll.Parent = tabContent
+		scroll.Visible = false
+		scroll.Parent = tabContent
+		local sp = Instance.new("UIPadding")
+		sp.PaddingTop = UDim.new(0, 4)
+		sp.PaddingBottom = UDim.new(0, 12)
+		sp.PaddingLeft = UDim.new(0, 2)
+		sp.PaddingRight = UDim.new(0, 6)
+		sp.Parent = scroll
+		local sl = Instance.new("UIListLayout")
+		sl.SortOrder = Enum.SortOrder.LayoutOrder
+		sl.Padding = UDim.new(0, 3)
+		sl.Parent = scroll
 		tabs[def.name] = { btn = btn, scroll = scroll }
 		btn.MouseButton1Click:Connect(function() setActiveTab(def.name) end)
 	end
 
 	local function buildersFor(scroll)
-		local y = 0
+		local idx = 0
 		local b = {}
 		function b.addHeader(text)
 			local h = Instance.new("TextLabel")
-			h.Size = UDim2.new(1, 0, 0, 20)
-			h.Position = UDim2.new(0, 0, 0, y)
+			h.Size = UDim2.new(1, 0, 0, 18)
+			h.LayoutOrder = idx; idx += 1
 			h.BackgroundTransparency = 1
 			h.Font = Enum.Font.GothamBold
-			h.Text = text; h.TextColor3 = Color3.fromRGB(255, 120, 170)
-			h.TextSize = 11; h.TextXAlignment = Enum.TextXAlignment.Left
-			h.Parent = scroll; y += 22
+			h.Text = text
+			h.TextColor3 = Color3.fromRGB(255, 120, 170)
+			h.TextSize = 10
+			h.TextXAlignment = Enum.TextXAlignment.Left
+			h.Parent = scroll
 		end
 		function b.addToggle(label, getter, setter)
 			local row = Instance.new("Frame")
-			row.Size = UDim2.new(1, 0, 0, 38)
-			row.Position = UDim2.new(0, 0, 0, y)
-			row.BackgroundTransparency = 1; row.Parent = scroll
+			row.Size = UDim2.new(1, 0, 0, 32)
+			row.LayoutOrder = idx; idx += 1
+			row.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+			row.BorderSizePixel = 0
+			row.Parent = scroll
+			local rc = Instance.new("UICorner"); rc.CornerRadius = UDim.new(0, 6); rc.Parent = row
 			local txt = Instance.new("TextLabel")
-			txt.Size = UDim2.new(1, -70, 1, 0); txt.BackgroundTransparency = 1
-			txt.Font = Enum.Font.Gotham; txt.Text = label
+			txt.Size = UDim2.new(1, -60, 1, 0)
+			txt.Position = UDim2.new(0, 8, 0, 0)
+			txt.BackgroundTransparency = 1
+			txt.Font = Enum.Font.Gotham
+			txt.Text = label
 			txt.TextColor3 = Color3.fromRGB(230, 230, 230)
-			txt.TextSize = 13; txt.TextXAlignment = Enum.TextXAlignment.Left; txt.Parent = row
+			txt.TextSize = 12
+			txt.TextXAlignment = Enum.TextXAlignment.Left
+			txt.Parent = row
 			local pill = Instance.new("Frame")
-			pill.Size = UDim2.new(0, 48, 0, 26)
-			pill.Position = UDim2.new(1, -48, 0.5, -13)
-			pill.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+			pill.Size = UDim2.new(0, 40, 0, 20)
+			pill.Position = UDim2.new(1, -48, 0.5, -10)
+			pill.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
 			pill.BorderSizePixel = 0; pill.Parent = row
 			local pcc = Instance.new("UICorner"); pcc.CornerRadius = UDim.new(1, 0); pcc.Parent = pill
 			local knob = Instance.new("Frame")
-			knob.Size = UDim2.new(0, 20, 0, 20)
-			knob.Position = UDim2.new(0, 3, 0.5, -10)
+			knob.Size = UDim2.new(0, 16, 0, 16)
+			knob.Position = UDim2.new(0, 2, 0.5, -8)
 			knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			knob.BorderSizePixel = 0; knob.Parent = pill
 			local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(1, 0); kc.Parent = knob
 			local btn = Instance.new("TextButton")
-			btn.Size = UDim2.new(1, 0, 1, 0); btn.BackgroundTransparency = 1; btn.Text = ""; btn.Parent = row
+			btn.Size = UDim2.new(1, 0, 1, 0)
+			btn.BackgroundTransparency = 1
+			btn.Text = ""; btn.Parent = row
 			local function render()
 				local on = getter()
-				pill.BackgroundColor3 = on and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(40, 40, 48)
-				knob.Position = on and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
+				pill.BackgroundColor3 = on and Color3.fromRGB(255, 60, 120) or Color3.fromRGB(45, 45, 55)
+				knob.Position = on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
 			end
 			btn.MouseButton1Click:Connect(function() setter(not getter()); render() end)
-			render(); y += 42
+			render()
 		end
 		function b.addSlider(label, minV, maxV, getter, setter, isFloat)
 			local frame = Instance.new("Frame")
-			frame.Size = UDim2.new(1, 0, 0, 50)
-			frame.Position = UDim2.new(0, 0, 0, y)
-			frame.BackgroundTransparency = 1; frame.Parent = scroll
+			frame.Size = UDim2.new(1, 0, 0, 44)
+			frame.LayoutOrder = idx; idx += 1
+			frame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+			frame.BorderSizePixel = 0
+			frame.Parent = scroll
+			local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0, 6); fc.Parent = frame
 			local fmt = function(v)
 				if isFloat then return string.format("%.2f", v) end
 				return tostring(math.floor(v))
 			end
 			local lab = Instance.new("TextLabel")
-			lab.Size = UDim2.new(1, 0, 0, 16); lab.BackgroundTransparency = 1
+			lab.Size = UDim2.new(1, -16, 0, 18)
+			lab.Position = UDim2.new(0, 8, 0, 4)
+			lab.BackgroundTransparency = 1
 			lab.Font = Enum.Font.Gotham
 			lab.Text = label .. ": " .. fmt(getter())
 			lab.TextColor3 = Color3.fromRGB(200, 200, 200)
-			lab.TextSize = 11; lab.TextXAlignment = Enum.TextXAlignment.Left; lab.Parent = frame
+			lab.TextSize = 11
+			lab.TextXAlignment = Enum.TextXAlignment.Left
+			lab.Parent = frame
 			local bg = Instance.new("Frame")
-			bg.Size = UDim2.new(1, 0, 0, 10)
-			bg.Position = UDim2.new(0, 0, 0, 28)
-			bg.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+			bg.Size = UDim2.new(1, -16, 0, 8)
+			bg.Position = UDim2.new(0, 8, 0, 28)
+			bg.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
 			bg.BorderSizePixel = 0; bg.Parent = frame
 			local bgc = Instance.new("UICorner"); bgc.CornerRadius = UDim.new(1, 0); bgc.Parent = bg
 			local fill = Instance.new("Frame")
 			fill.Size = UDim2.new((getter() - minV) / (maxV - minV), 0, 1, 0)
 			fill.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
 			fill.BorderSizePixel = 0; fill.Parent = bg
-			local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(1, 0); fc.Parent = fill
+			local fc2 = Instance.new("UICorner"); fc2.CornerRadius = UDim.new(1, 0); fc2.Parent = fill
 			local hit = Instance.new("TextButton")
-			hit.Size = UDim2.new(1, 0, 3, 0)
-			hit.Position = UDim2.new(0, 0, -1, 0)
-			hit.BackgroundTransparency = 1; hit.Text = ""; hit.Parent = bg
+			hit.Size = UDim2.new(1, 0, 4, 0)
+			hit.Position = UDim2.new(0, 0, -1.5, 0)
+			hit.BackgroundTransparency = 1
+			hit.Text = ""; hit.Parent = bg
 			local function setFromX(x)
 				local rel = math.clamp(x / bg.AbsoluteSize.X, 0, 1)
 				local v = minV + rel * (maxV - minV)
@@ -1030,55 +1080,55 @@ local function makeUI()
 					setFromX(input.Position.X - bg.AbsolutePosition.X)
 				end
 			end)
-			y += 54
 		end
 		function b.addButton(label, callback)
 			local btn = Instance.new("TextButton")
-			btn.Size = UDim2.new(1, 0, 0, 32)
-			btn.Position = UDim2.new(0, 0, 0, y)
+			btn.Size = UDim2.new(1, 0, 0, 30)
+			btn.LayoutOrder = idx; idx += 1
 			btn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
 			btn.Text = label
 			btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
 			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-			btn.BorderSizePixel = 0; btn.Parent = scroll
-			local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 8); bc.Parent = btn
+			btn.BorderSizePixel = 0
+			btn.Parent = scroll
+			local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 6); bc.Parent = btn
 			btn.MouseButton1Click:Connect(function() callback() end)
-			y += 36
 		end
 		function b.addTextBox(label, getter, setter)
-			local frame = Instance.new("Frame")
-			frame.Size = UDim2.new(1, 0, 0, 36)
-			frame.Position = UDim2.new(0, 0, 0, y)
-			frame.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
-			frame.BorderSizePixel = 0; frame.Parent = scroll
-			local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0, 8); fc.Parent = frame
 			local box = Instance.new("TextBox")
-			box.Size = UDim2.new(1, -12, 1, 0)
-			box.Position = UDim2.new(0, 6, 0, 0)
-			box.BackgroundTransparency = 1
-			box.Font = Enum.Font.Gotham; box.Text = getter()
+			box.Size = UDim2.new(1, 0, 0, 30)
+			box.LayoutOrder = idx; idx += 1
+			box.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+			box.Font = Enum.Font.Gotham
+			box.Text = getter()
 			box.PlaceholderText = label
 			box.TextColor3 = Color3.fromRGB(230, 230, 230)
 			box.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
-			box.TextSize = 12; box.TextXAlignment = Enum.TextXAlignment.Left
-			box.ClearTextOnFocus = false; box.Parent = frame
+			box.TextSize = 11
+			box.TextXAlignment = Enum.TextXAlignment.Left
+			box.ClearTextOnFocus = false
+			box.BorderSizePixel = 0
+			box.Parent = scroll
+			local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 6); bc.Parent = box
+			local bp = Instance.new("UIPadding")
+			bp.PaddingLeft = UDim.new(0, 8); bp.Parent = box
 			box.FocusLost:Connect(function() setter(box.Text) end)
-			y += 42
 		end
-		function b.finish() scroll.CanvasSize = UDim2.new(0, 0, 0, y + 10) end
+		function b.finish()
+			scroll.CanvasSize = UDim2.new(0, 0, 0, scroll.UIListLayout.AbsoluteContentSize.Y + 12)
+		end
 		return b
 	end
-
-	--============ LIST MANAGER (priority arrows) ============
-	local function createListManager(listTable, withPriority, onClose)
+	 	--============ LIST MANAGER ============
+	local function createListManager(listTable, withPriority)
 		local M = Instance.new("Frame")
-		M.Size = UDim2.new(1, -12, 1, -76)
-		M.Position = UDim2.new(0, 6, 0, 70)
-		M.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+		M.Size = UDim2.new(1, 0, 1, 0)
+		M.Position = UDim2.new(0, 0, 0, 0)
+		M.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 		M.BorderSizePixel = 0
 		M.Visible = false
 		M.ZIndex = 20
-		M.Parent = panel
+		M.Parent = tabContent
 		local cM = Instance.new("UICorner"); cM.CornerRadius = UDim.new(0, 8); cM.Parent = M
 
 		local close = Instance.new("TextButton")
@@ -1087,51 +1137,50 @@ local function makeUI()
 		close.Text = "×"
 		close.BackgroundTransparency = 1
 		close.TextColor3 = Color3.fromRGB(255, 100, 100)
-		close.TextSize = 20
+		close.TextSize = 18
 		close.Font = Enum.Font.GothamBold
 		close.ZIndex = 21
 		close.Parent = M
-		close.MouseButton1Click:Connect(function()
-			M.Visible = false
-			if onClose then onClose() end
-		end)
+		close.MouseButton1Click:Connect(function() M.Visible = false end)
 
 		local input = Instance.new("TextBox")
-		input.Size = UDim2.new(1, -55, 0, 26)
-		input.Position = UDim2.new(0, 5, 0, 6)
-		input.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+		input.Size = UDim2.new(1, -46, 0, 26)
+		input.Position = UDim2.new(0, 6, 0, 6)
+		input.BackgroundColor3 = Color3.fromRGB(48, 48, 58)
 		input.TextColor3 = Color3.fromRGB(255, 255, 255)
-		input.PlaceholderText = withPriority and "priority keyword..." or "name..."
+		input.PlaceholderText = withPriority and "keyword..." or "name..."
 		input.Text = ""
 		input.Font = Enum.Font.Gotham
-		input.TextSize = 12
+		input.TextSize = 11
+		input.ClearTextOnFocus = false
 		input.ZIndex = 21
 		input.Parent = M
 		local ci = Instance.new("UICorner"); ci.CornerRadius = UDim.new(0, 4); ci.Parent = input
 
 		local addBtn = Instance.new("TextButton")
 		addBtn.Size = UDim2.new(0, 30, 0, 26)
-		addBtn.Position = UDim2.new(1, -35, 0, 6)
+		addBtn.Position = UDim2.new(1, -36, 0, 6)
 		addBtn.Text = "+"
 		addBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 40)
 		addBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 		addBtn.Font = Enum.Font.GothamBold
-		addBtn.TextSize = 16
+		addBtn.TextSize = 14
 		addBtn.ZIndex = 21
 		addBtn.Parent = M
 		local ca = Instance.new("UICorner"); ca.CornerRadius = UDim.new(0, 4); ca.Parent = addBtn
 
 		local scroll = Instance.new("ScrollingFrame")
-		scroll.Size = UDim2.new(1, -10, 1, -42)
-		scroll.Position = UDim2.new(0, 5, 0, 38)
+		scroll.Size = UDim2.new(1, -12, 1, -42)
+		scroll.Position = UDim2.new(0, 6, 0, 38)
 		scroll.BackgroundTransparency = 1
-		scroll.ScrollBarThickness = 4
+		scroll.ScrollBarThickness = 3
+		scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 60, 120)
 		scroll.ZIndex = 21
 		scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 		scroll.Parent = M
 		local list = Instance.new("UIListLayout")
 		list.SortOrder = Enum.SortOrder.LayoutOrder
-		list.Padding = UDim.new(0, 2)
+		list.Padding = UDim.new(0, 3)
 		list.Parent = scroll
 
 		local function refresh()
@@ -1140,31 +1189,34 @@ local function makeUI()
 			end
 			for i, item in ipairs(listTable) do
 				local row = Instance.new("Frame")
-				row.Size = UDim2.new(1, 0, 0, 22)
-				row.BackgroundTransparency = 1
+				row.Size = UDim2.new(1, 0, 0, 24)
+				row.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
+				row.BorderSizePixel = 0
 				row.LayoutOrder = i
 				row.ZIndex = 22
 				row.Parent = scroll
+				local rc = Instance.new("UICorner"); rc.CornerRadius = UDim.new(0, 4); rc.Parent = row
 
 				local lbl = Instance.new("TextLabel")
-				lbl.Size = UDim2.new(1, withPriority and -80 or -25, 1, 0)
+				lbl.Size = UDim2.new(1, withPriority and -76 or -28, 1, 0)
+				lbl.Position = UDim2.new(0, 6, 0, 0)
 				lbl.BackgroundTransparency = 1
 				lbl.Text = (withPriority and (i .. ". ") or "") .. item
 				lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
 				lbl.TextXAlignment = Enum.TextXAlignment.Left
 				lbl.Font = Enum.Font.Gotham
-				lbl.TextSize = 12
+				lbl.TextSize = 11
 				lbl.ZIndex = 22
 				lbl.Parent = row
 
 				if withPriority then
 					local up = Instance.new("TextButton")
-					up.Size = UDim2.new(0, 20, 0, 22)
-					up.Position = UDim2.new(1, -80, 0, 0)
+					up.Size = UDim2.new(0, 20, 0, 24)
+					up.Position = UDim2.new(1, -76, 0, 0)
 					up.Text = "▲"
 					up.BackgroundTransparency = 1
 					up.TextColor3 = Color3.fromRGB(100, 200, 255)
-					up.TextSize = 12
+					up.TextSize = 11
 					up.Font = Enum.Font.GothamBold
 					up.ZIndex = 23
 					up.Parent = row
@@ -1176,12 +1228,12 @@ local function makeUI()
 					end)
 
 					local dn = Instance.new("TextButton")
-					dn.Size = UDim2.new(0, 20, 0, 22)
-					dn.Position = UDim2.new(1, -55, 0, 0)
+					dn.Size = UDim2.new(0, 20, 0, 24)
+					dn.Position = UDim2.new(1, -54, 0, 0)
 					dn.Text = "▼"
 					dn.BackgroundTransparency = 1
 					dn.TextColor3 = Color3.fromRGB(100, 200, 255)
-					dn.TextSize = 12
+					dn.TextSize = 11
 					dn.Font = Enum.Font.GothamBold
 					dn.ZIndex = 23
 					dn.Parent = row
@@ -1194,8 +1246,8 @@ local function makeUI()
 				end
 
 				local del = Instance.new("TextButton")
-				del.Size = UDim2.new(0, 20, 0, 22)
-				del.Position = UDim2.new(1, -25, 0, 0)
+				del.Size = UDim2.new(0, 20, 0, 24)
+				del.Position = UDim2.new(1, -26, 0, 0)
 				del.Text = "×"
 				del.BackgroundTransparency = 1
 				del.TextColor3 = Color3.fromRGB(255, 100, 100)
@@ -1208,7 +1260,7 @@ local function makeUI()
 					saveSettings(); refresh()
 				end)
 			end
-			scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y)
+			scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y + 6)
 		end
 
 		addBtn.MouseButton1Click:Connect(function()
@@ -1233,10 +1285,10 @@ local function makeUI()
 		deleteMgr.Visible = false
 	end
 
-	-- ===== AUTO =====
+	-- ===== AUTO TAB =====
 	do
 		local b = buildersFor(tabs.AUTO.scroll)
-		b.addHeader("AUTO FARM (priority list)")
+		b.addHeader("AUTO FARM (priority)")
 		b.addToggle("Auto Farm", function() return state.autoFarm end, function(v)
 			state.autoFarm = v
 			if v then spawn(autoFarmLoop) end
@@ -1269,12 +1321,12 @@ local function makeUI()
 		b.addSlider("Delete Rate (/s)", 1, 100, function() return state.deleteRate end,
 			function(v) state.deleteRate = v; saveSettings() end)
 		b.addHeader("GRAB TOOLS")
-		b.addToggle("Grab Tools (auto-equip)", function() return state.grabTools end, function(v)
+		b.addToggle("Grab Tools", function() return state.grabTools end, function(v)
 			state.grabTools = v
 			if v then startGrabTools() else stopGrabTools() end
 		end)
 		b.addHeader("QUICK COLLECT")
-		b.addToggle("Auto Collect (keywords)", function() return state.autoCollect end,
+		b.addToggle("Auto Collect", function() return state.autoCollect end,
 			function(v) state.autoCollect = v end)
 		b.addToggle("TP khi nhặt", function() return state.tpOnCollect end,
 			function(v) state.tpOnCollect = v end)
@@ -1294,10 +1346,10 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== FIGHT =====
+	-- ===== FIGHT TAB =====
 	do
 		local b = buildersFor(tabs.FIGHT.scroll)
-		b.addHeader("KILL AURA — NPC + PLAYER")
+		b.addHeader("KILL AURA")
 		b.addToggle("Player", function() return state.killAuraPlayer end,
 			function(v) state.killAuraPlayer = v end)
 		b.addSlider("Player Range", 5, 300, function() return state.auraRangePlayer end,
@@ -1321,7 +1373,7 @@ local function makeUI()
 		b.finish()
 	end
 
-	-- ===== MOVE =====
+	-- ===== MOVE TAB =====
 	do
 		local b = buildersFor(tabs.MOVE.scroll)
 		b.addHeader("SPEED BOOST")
@@ -1352,7 +1404,7 @@ local function makeUI()
 		b.finish()
 	end
 
-		-- ===== ESP =====
+	-- ===== ESP TAB =====
 	do
 		local b = buildersFor(tabs.ESP.scroll)
 		b.addHeader("ESP")
@@ -1379,12 +1431,12 @@ local function makeUI()
 
 	setActiveTab("AUTO")
 
-	-- bubble
+	-- minimize bubble
 	local bubble = Instance.new("TextButton")
-	bubble.Size = UDim2.new(0, 52, 0, 52)
+	bubble.Size = UDim2.new(0, 48, 0, 48)
 	bubble.Position = panel.Position
 	bubble.BackgroundColor3 = Color3.fromRGB(255, 60, 120)
-	bubble.Text = "oll"; bubble.Font = Enum.Font.GothamBold; bubble.TextSize = 14
+	bubble.Text = "oll"; bubble.Font = Enum.Font.GothamBold; bubble.TextSize = 13
 	bubble.TextColor3 = Color3.fromRGB(255, 255, 255)
 	bubble.BorderSizePixel = 0
 	bubble.Visible = false; bubble.Parent = gui
